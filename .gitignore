@@ -208,7 +208,12 @@ __marimo__/
 
 # Project-specific: Input data files (large, not included in repo)
 input_data/
+normalized_input_data/
 
 # Archive contains large prototype files
 archive/paths.tsv
 archive/keeper_paths.tsv
+
+# Results and temporary files
+*.csv
+*.swp

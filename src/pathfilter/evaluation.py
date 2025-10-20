@@ -92,16 +92,18 @@ class FilterMetrics:
 
 def evaluate_filter_strategy(
     paths: List[Path],
-    normalized_expected_nodes: Set[str],
+    expected_nodes: Set[str],
     filters: List[FilterFunction],
     strategy_name: str
 ) -> FilterMetrics:
     """
     Evaluate a filter strategy on a set of paths.
 
+    ASSUMES: Paths and expected_nodes contain pre-normalized CURIEs.
+
     Args:
-        paths: List of Path objects to evaluate
-        normalized_expected_nodes: Set of normalized expected node CURIEs
+        paths: List of Path objects to evaluate (pre-normalized)
+        expected_nodes: Set of expected node CURIEs (pre-normalized)
         filters: List of filter functions to apply
         strategy_name: Name for this filter strategy
 
@@ -110,16 +112,16 @@ def evaluate_filter_strategy(
     """
     # Metrics before filtering
     total_before = len(paths)
-    expected_before = count_paths_with_expected_nodes(paths, normalized_expected_nodes)
-    nodes_before = len(get_expected_nodes_found_in_paths(paths, normalized_expected_nodes))
+    expected_before = count_paths_with_expected_nodes(paths, expected_nodes)
+    nodes_before = len(get_expected_nodes_found_in_paths(paths, expected_nodes))
 
     # Apply filters
     filtered_paths = apply_filters(paths, filters)
 
     # Metrics after filtering
     total_after = len(filtered_paths)
-    expected_after = count_paths_with_expected_nodes(filtered_paths, normalized_expected_nodes)
-    nodes_after = len(get_expected_nodes_found_in_paths(filtered_paths, normalized_expected_nodes))
+    expected_after = count_paths_with_expected_nodes(filtered_paths, expected_nodes)
+    nodes_after = len(get_expected_nodes_found_in_paths(filtered_paths, expected_nodes))
 
     return FilterMetrics(
         filter_name=strategy_name,
@@ -134,15 +136,17 @@ def evaluate_filter_strategy(
 
 def evaluate_multiple_strategies(
     paths: List[Path],
-    normalized_expected_nodes: Set[str],
+    expected_nodes: Set[str],
     filter_strategies: dict[str, List[FilterFunction]]
 ) -> List[FilterMetrics]:
     """
     Evaluate multiple filter strategies on the same set of paths.
 
+    ASSUMES: Paths and expected_nodes contain pre-normalized CURIEs.
+
     Args:
-        paths: List of Path objects to evaluate
-        normalized_expected_nodes: Set of normalized expected node CURIEs
+        paths: List of Path objects to evaluate (pre-normalized)
+        expected_nodes: Set of expected node CURIEs (pre-normalized)
         filter_strategies: Dict mapping strategy name to list of filters
 
     Returns:
@@ -152,7 +156,7 @@ def evaluate_multiple_strategies(
 
     for strategy_name, filters in filter_strategies.items():
         metrics = evaluate_filter_strategy(
-            paths, normalized_expected_nodes, filters, strategy_name
+            paths, expected_nodes, filters, strategy_name
         )
         results.append(metrics)
 

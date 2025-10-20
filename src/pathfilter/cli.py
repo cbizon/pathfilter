@@ -7,7 +7,6 @@ from typing import List, Optional
 
 from pathfilter.query_loader import load_all_queries, load_query_from_sheet, Query
 from pathfilter.path_loader import load_paths_for_query
-from pathfilter.normalization import get_normalized_expected_nodes
 from pathfilter.filters import (
     FilterFunction,
     no_dupe_types,
@@ -15,10 +14,9 @@ from pathfilter.filters import (
     no_related_to,
     no_end_pheno,
     no_chemical_start,
-    all_paths,
-    DEFAULT_FILTERS,
-    STRICT_FILTERS
+    all_paths
 )
+from itertools import combinations
 from pathfilter.evaluation import (
     evaluate_filter_strategy,
     evaluate_multiple_strategies,
@@ -36,6 +34,49 @@ AVAILABLE_FILTERS = {
     "no_chemical_start": no_chemical_start,
     "all_paths": all_paths,
 }
+
+
+def generate_all_filter_combinations() -> dict[str, List[FilterFunction]]:
+    """
+    Generate all combinations of filters for comprehensive evaluation.
+
+    Returns:
+        Dict mapping strategy name to filter list
+    """
+    # Core filters (excluding all_paths baseline and no_chemical_start)
+    core_filters = {
+        "no_dupe_types": no_dupe_types,
+        "no_expression": no_expression,
+        "no_related_to": no_related_to,
+        "no_end_pheno": no_end_pheno,
+    }
+
+    strategies = {}
+
+    # Baseline: no filtering
+    strategies["none"] = [all_paths]
+
+    # Individual filters
+    for name, filter_func in core_filters.items():
+        strategies[name] = [filter_func]
+
+    # All combinations of 2 filters
+    filter_names = list(core_filters.keys())
+    for combo in combinations(filter_names, 2):
+        strategy_name = "+".join(combo)
+        strategy_filters = [core_filters[name] for name in combo]
+        strategies[strategy_name] = strategy_filters
+
+    # All combinations of 3 filters
+    for combo in combinations(filter_names, 3):
+        strategy_name = "+".join(combo)
+        strategy_filters = [core_filters[name] for name in combo]
+        strategies[strategy_name] = strategy_filters
+
+    # All 4 filters combined
+    strategies["all_four"] = list(core_filters.values())
+
+    return strategies
 
 
 def parse_filter_names(filter_spec: str) -> List[FilterFunction]:
@@ -82,9 +123,11 @@ def evaluate_query(
     """
     Evaluate filter strategies on a single query.
 
+    ASSUMES: Query and paths contain pre-normalized CURIEs.
+
     Args:
-        query: Query object
-        paths_dir: Directory containing path files
+        query: Query object (with pre-normalized expected nodes)
+        paths_dir: Directory containing path files (pre-normalized)
         filter_strategies: Dict mapping strategy name to filter list
 
     Returns:
@@ -96,14 +139,17 @@ def evaluate_query(
         print(f"Warning: No paths found for query {query.name}")
         return None
 
-    # Get normalized expected nodes
-    normalized_expected = get_normalized_expected_nodes(query)
-    if not normalized_expected:
+    # Get expected nodes (already normalized in the input data)
+    expected_nodes = set()
+    for curies_list in query.expected_nodes.values():
+        expected_nodes.update(curies_list)
+
+    if not expected_nodes:
         print(f"Warning: No expected nodes for query {query.name}")
         return None
 
     # Evaluate all strategies
-    results = evaluate_multiple_strategies(paths, normalized_expected, filter_strategies)
+    results = evaluate_multiple_strategies(paths, expected_nodes, filter_strategies)
 
     return results
 
@@ -142,20 +188,20 @@ Available filters:
 
     parser.add_argument(
         "--filters",
-        default="default",
-        help="Filter strategies to evaluate (comma-separated). Can be 'default', 'strict', or specific filter names."
+        default="all_combinations",
+        help="Filter strategies to evaluate. Use 'all_combinations' to test all combinations, or specify filter names."
     )
 
     parser.add_argument(
         "--queries-file",
-        default="input_data/Pathfinder Test Queries.xlsx.ods",
-        help="Path to query definitions file"
+        default="normalized_input_data/Pathfinder Test Queries.xlsx.ods",
+        help="Path to query definitions file (should be pre-normalized)"
     )
 
     parser.add_argument(
         "--paths-dir",
-        default="input_data/paths",
-        help="Directory containing path files"
+        default="normalized_input_data/paths",
+        help="Directory containing path files (should be pre-normalized)"
     )
 
     parser.add_argument(
@@ -167,16 +213,18 @@ Available filters:
 
     # Parse filter strategies
     try:
-        # For now, support one strategy specification
-        # Could be extended to support multiple: "default,strict,none"
-        filter_specs = [s.strip() for s in args.filters.split("|")]
-
-        filter_strategies = {}
-        for spec in filter_specs:
-            filters = parse_filter_names(spec)
-            # Use spec as strategy name
-            strategy_name = spec if spec in ["default", "strict", "none"] else spec
-            filter_strategies[strategy_name] = filters
+        if args.filters == "all_combinations":
+            # Generate all combinations
+            filter_strategies = generate_all_filter_combinations()
+            print(f"Evaluating {len(filter_strategies)} filter combinations")
+        else:
+            # Parse user-specified filters
+            filter_specs = [s.strip() for s in args.filters.split("|")]
+            filter_strategies = {}
+            for spec in filter_specs:
+                filters = parse_filter_names(spec)
+                strategy_name = spec
+                filter_strategies[strategy_name] = filters
 
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -207,26 +255,33 @@ Available filters:
     print()
 
     # Evaluate each query
-    all_results = []
+    all_results = []  # List of (query_name, FilterMetrics) tuples
     for query in queries:
         print(f"Processing query: {query.name} ({query.start_label} -> {query.end_label})")
 
         results = evaluate_query(query, args.paths_dir, filter_strategies)
 
         if results:
-            all_results.extend(results)
-            # Print results for this query
-            print(format_metrics_table(results))
+            # Store with query name
+            for metrics in results:
+                all_results.append((query.name, metrics))
+
+            # Print results for this query (optional, can be verbose)
+            if len(filter_strategies) <= 5:  # Only print table if not too many strategies
+                print(format_metrics_table(results))
+            else:
+                print(f"  Evaluated {len(results)} filter strategies")
             print()
 
     # Summary
     if all_results:
         print(f"\nEvaluated {len(queries)} queries")
         print(f"Total evaluations: {len(all_results)}")
+        print(f"Filter combinations tested: {len(filter_strategies)}")
 
         # Write CSV output if requested
         if args.output:
-            write_csv_output(all_results, args.output, queries)
+            write_csv_output(all_results, args.output)
             print(f"Results written to {args.output}")
     else:
         print("No results to display")
@@ -234,16 +289,19 @@ Available filters:
     return 0
 
 
-def write_csv_output(results: List[FilterMetrics], output_file: str, queries: List[Query]):
-    """Write evaluation results to CSV file."""
-    # Build mapping of filter_name to query (if we tracked it)
-    # For now, write all results with available fields
+def write_csv_output(results: List[tuple[str, FilterMetrics]], output_file: str):
+    """Write evaluation results to CSV file.
 
+    Args:
+        results: List of tuples (query_name, metrics)
+        output_file: Path to output CSV file
+    """
     with open(output_file, 'w', newline='') as f:
         writer = csv.writer(f)
 
         # Header
         writer.writerow([
+            'query',
             'filter_strategy',
             'total_paths_before',
             'total_paths_after',
@@ -260,8 +318,9 @@ def write_csv_output(results: List[FilterMetrics], output_file: str, queries: Li
         ])
 
         # Data rows
-        for metrics in results:
+        for query_name, metrics in results:
             writer.writerow([
+                query_name,
                 metrics.filter_name,
                 metrics.total_paths_before,
                 metrics.total_paths_after,
