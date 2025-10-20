@@ -58,33 +58,44 @@ pathfilter/
 
 ## Running Evaluations
 
-**Main command to run all evaluations:**
+### **FIRST TIME SETUP** - Normalize Input Data
 ```bash
-uv run python -m pathfilter.cli
+uv run python scripts/normalize_input_data.py
 ```
+This creates `normalized_input_data/` with pre-normalized CURIEs. Only run once or when input data changes.
+
+### Running Evaluations
+
+**Evaluate all queries with all filter combinations (default):**
+```bash
+uv run python -m pathfilter.cli --output results.csv
+```
+This tests 16 filter combinations across all queries (~5-10 minutes for 20 queries).
 
 **Evaluate specific query:**
 ```bash
-uv run python -m pathfilter.cli --query PFTQ-4
+uv run python -m pathfilter.cli --query PFTQ-4 --output results.csv
 ```
 
-**Compare filter strategies:**
+**Custom filter combinations:**
 ```bash
-uv run python -m pathfilter.cli --filters "default|strict|none"
-```
-
-**Export results to CSV:**
-```bash
-uv run python -m pathfilter.cli --output results.csv
+uv run python -m pathfilter.cli --filters "no_dupe_types|no_expression" --output results.csv
 ```
 
 ## Key Implementation Details
 
-### Node Normalization
-- Uses Node Normalizer API with conflation enabled (drug_chemical_conflate=True, conflate=True)
-- Batch processing: Collects all unique CURIEs from paths and normalizes in ONE API call
-- Caches results with @lru_cache for efficiency
-- Matches paths to expected nodes using normalized (preferred) identifiers
+### **Pre-Normalized Architecture (IMPORTANT!)**
+- **Data is pre-normalized**: CURIEs are normalized once via `normalize_input_data.py`
+- **No API calls during evaluation**: Matching uses simple set operations
+- **16x faster**: 0.7s vs 11s per query
+- `matching.py` assumes all CURIEs are already normalized (no API calls)
+- Input data comes from `normalized_input_data/` by default
+
+### Node Normalization (for reference)
+- Normalization uses Node Normalizer API with conflation enabled (drug_chemical_conflate=True, conflate=True)
+- Returns preferred (clique leader) identifiers
+- ~96% of input CURIEs are already in normalized form
+- Normalization script batches API calls efficiently
 
 ### Filter Functions
 Migrated from archive/filter.py and adapted for Path objects:
