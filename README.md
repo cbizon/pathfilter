@@ -119,6 +119,37 @@ For each filter strategy, the system calculates:
 - **Retention Rate**: Fraction of total paths kept
 - **Expected Nodes Recall**: Fraction of unique expected nodes still found
 
+## Visualizing and Analyzing Results
+
+### Generate Enrichment Charts
+
+Create bar charts showing enrichment for each filter across all queries:
+
+```bash
+uv run python scripts/visualize_results.py --results all_filter_results.csv --output enrichment_by_query.png
+```
+
+This generates:
+- PNG file with subplots for each query
+- PDF version for publication-quality graphics
+- Color-coded bars (green: strong enrichment, blue: moderate, coral: harmful)
+- Query titles with start/end node labels
+
+### Generate Best Filters Table
+
+Create a summary table showing the best filter for each query:
+
+```bash
+uv run python scripts/best_filters_table.py --results all_filter_results.csv --output best_filters.tsv
+```
+
+Output includes:
+- Query ID and descriptive name
+- Best filter (or "none" if no filter improves results)
+- Enrichment factor
+- Sorted by enrichment (highest to lowest)
+- Statistics on most common effective filters
+
 ## Project Structure
 
 ```
@@ -140,7 +171,9 @@ pathfilter/
 │   ├── Pathfinder Test Queries.xlsx.ods
 │   └── paths/               # Pre-normalized path xlsx files
 └── scripts/                 # Utility scripts
-    └── normalize_input_data.py  # Pre-normalization script
+    ├── normalize_input_data.py    # Pre-normalization script
+    ├── visualize_results.py       # Create enrichment visualizations
+    └── best_filters_table.py      # Generate best filters table
 ```
 
 ### Key Architecture: Pre-Normalized Data

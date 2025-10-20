@@ -53,6 +53,9 @@ pathfilter/
 │   └── paths/*.xlsx
 ├── archive/                 # Original prototype (filter.py, paths.tsv)
 ├── scripts/                 # Utility scripts
+│   ├── normalize_input_data.py    # Pre-normalize CURIEs for faster evaluation
+│   ├── visualize_results.py       # Create enrichment bar charts per query
+│   └── best_filters_table.py      # Generate table of best filters by query
 └── docs/                    # Documentation
 ```
 
@@ -81,6 +84,20 @@ uv run python -m pathfilter.cli --query PFTQ-4 --output results.csv
 ```bash
 uv run python -m pathfilter.cli --filters "no_dupe_types|no_expression" --output results.csv
 ```
+
+### Visualizing Results
+
+**Create enrichment bar charts for each query:**
+```bash
+uv run python scripts/visualize_results.py --results all_filter_results.csv --output enrichment_by_query.png
+```
+Generates PNG and PDF visualizations with subplots for each query showing enrichment vs filters.
+
+**Generate table of best filters per query:**
+```bash
+uv run python scripts/best_filters_table.py --results all_filter_results.csv --output best_filters.tsv
+```
+Creates a TSV table sorted by enrichment showing the best filter for each query (favoring simpler filters in ties).
 
 ## Key Implementation Details
 
@@ -152,4 +169,4 @@ Tests marked with `@pytest.mark.slow` load real data files and make API calls.
 - When making pull requests, NEVER ever mention a `co-authored-by` or similar aspects. In particular, never mention the tool used to create the commit message or PR.
 
 - Check git status before commits
-
+- Use tsv not csv.
