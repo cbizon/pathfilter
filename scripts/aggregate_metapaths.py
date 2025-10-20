@@ -36,6 +36,16 @@ def main():
     df = pd.read_csv(args.input, sep='\t')
     print(f"Loaded {len(df)} metapath entries")
 
+    # Identify queries with no hits overall (all metapaths have enrichment = 0)
+    # These queries should be excluded because enrichment is meaningless there
+    queries_with_no_hits = df.groupby('query_id')['enrichment'].max() == 0
+    queries_to_exclude = queries_with_no_hits[queries_with_no_hits].index.tolist()
+
+    if queries_to_exclude:
+        print(f"Excluding {len(queries_to_exclude)} queries with no hits: {', '.join(queries_to_exclude)}")
+        df = df[~df['query_id'].isin(queries_to_exclude)]
+        print(f"Filtered to {len(df)} entries from queries with hits")
+
     # Group by metapath and calculate statistics
     print("Aggregating statistics by metapath...")
     aggregated = df.groupby('metapath').agg({

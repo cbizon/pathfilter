@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot enrichment vs frequency for unreliable metapaths (num_queries=8, enrichment_min=0)."""
+"""Plot enrichment vs frequency for metapaths with complete misses (num_queries=max, enrichment_min=0)."""
 import argparse
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -8,7 +8,7 @@ import numpy as np
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Plot enrichment vs frequency for unreliable metapaths'
+        description='Plot enrichment vs frequency for metapaths with complete misses'
     )
     parser.add_argument(
         '--aggregated',
@@ -22,14 +22,14 @@ def main():
     )
     parser.add_argument(
         '--output',
-        default='unreliable_metapaths.png',
-        help='Output PNG file (default: unreliable_metapaths.png)'
+        default='complete_misses.png',
+        help='Output PNG file (default: complete_misses.png)'
     )
     parser.add_argument(
         '--num-queries',
         type=int,
-        default=8,
-        help='Filter for metapaths with this many queries (default: 8)'
+        default=7,
+        help='Filter for metapaths with this many queries (default: 7, the max after excluding queries with no hits)'
     )
 
     args = parser.parse_args()
@@ -65,8 +65,8 @@ def main():
     n_rows = (n_metapaths + n_cols - 1) // n_cols
 
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(18, 5 * n_rows))
-    fig.suptitle(f'Unreliable Metapaths: Enrichment vs Frequency\n' +
-                 f'(num_queries={args.num_queries}, enrichment_min=0)',
+    fig.suptitle(f'Metapaths with Complete Misses: Enrichment vs Frequency\n' +
+                 f'(num_queries={args.num_queries}, enrichment_min=0 - fail in at least one query)',
                  fontsize=16, fontweight='bold')
 
     # Flatten axes

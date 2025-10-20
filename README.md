@@ -150,6 +150,103 @@ Output includes:
 - Sorted by enrichment (highest to lowest)
 - Statistics on most common effective filters
 
+## Metapath Enrichment Analysis
+
+Beyond evaluating filters, you can analyze which **structural patterns** (metapaths) in the knowledge graph correlate with finding expected nodes. Metapaths describe the types and predicates along a path (e.g., `SmallMolecule ---affects--> Gene ---target_for--> Disease`).
+
+### What is Metapath Analysis?
+
+Each path in the knowledge graph can match multiple structural patterns. Metapath analysis calculates enrichment metrics for each pattern to identify which structures are most likely to contain expected nodes. This helps understand:
+- Which types of relationships lead to better results
+- Which patterns work consistently across queries
+- Which patterns are common but unreliable
+
+### Running Metapath Analysis
+
+**Analyze all queries** (~3 minutes):
+
+```bash
+uv run python scripts/metapath_enrichment.py --output metapath_enrichment.tsv
+```
+
+This generates `metapath_enrichment.tsv` with columns:
+- `query_id`: Query identifier
+- `metapath`: Structural pattern (e.g., `biolink:Gene ---affects--> biolink:Disease`)
+- `total_paths`: Number of paths using this metapath
+- `hit_paths`: Number of paths with this metapath containing expected nodes
+- `precision`: Fraction of paths with this metapath that are hits
+- `enrichment`: How much better than query baseline (>1.0 = better, <1.0 = worse)
+- `frequency`: How common this metapath is in the query (can be >1.0 if paths have multiple metapaths)
+
+**Important**: Queries with no hits in any path (e.g., PFTQ-11, PFTQ-14) are automatically excluded since enrichment is meaningless there.
+
+### Aggregating Metapaths Across Queries
+
+To identify consistently effective metapaths:
+
+```bash
+uv run python scripts/aggregate_metapaths.py --input metapath_enrichment.tsv --output metapath_aggregated.tsv
+```
+
+This creates `metapath_aggregated.tsv` with per-metapath statistics:
+- `enrichment_min/max/mean`: Enrichment statistics across all queries where the metapath appears
+- `frequency_min/max/mean`: Frequency statistics
+- `num_queries`: Number of queries containing this metapath
+
+**Key Finding**: Metapaths with `enrichment_min > 1.0` and `num_queries > 1` are consistently effective across multiple queries.
+
+### Visualizing Metapath Patterns
+
+**Frequency vs Enrichment scatter plot** (log-log scale):
+
+```bash
+uv run python scripts/plot_metapath_scatter.py --input metapath_enrichment.tsv --output metapath_frequency_vs_enrichment.png
+```
+
+Shows which metapaths are both common and effective (upper right = ideal).
+
+**Consistency plot** (minimum enrichment vs number of queries):
+
+```bash
+uv run python scripts/plot_metapath_consistency.py --input metapath_aggregated.tsv --output metapath_consistency.png
+```
+
+Identifies generalizable metapaths (upper right = works well across many queries).
+
+**Complete misses plot** (metapaths that fail in at least one query):
+
+```bash
+uv run python scripts/plot_unreliable_metapaths.py --aggregated metapath_aggregated.tsv --enrichment metapath_enrichment.tsv --output complete_misses.png
+```
+
+Shows common metapaths (appear in 7 queries) that have enrichment=0 in at least one query, revealing unreliable patterns.
+
+### Sorting and Filtering
+
+**Sort aggregated results**:
+
+```bash
+uv run python scripts/sort_metapaths.py --input metapath_enrichment.tsv --output metapath_enrichment_sorted.tsv
+```
+
+Sorts by query_id, then enrichment (descending) within each query.
+
+**Filter by minimum queries**:
+
+```bash
+uv run python scripts/aggregate_metapaths.py --min-queries 3 --output metapath_multi_query.tsv
+```
+
+Only include metapaths appearing in 3+ queries.
+
+### Interpretation
+
+- **Enrichment > 1.0**: Metapath is better than baseline for finding expected nodes
+- **Enrichment = 0**: Metapath never finds expected nodes in that query
+- **Frequency > 1.0**: Metapath appears multiple times per path on average
+- **High `enrichment_min` with high `num_queries`**: Most reliable patterns
+- **Common patterns with `enrichment_min = 0`**: Appear frequently but fail unpredictably
+
 ## Project Structure
 
 ```
@@ -162,6 +259,7 @@ pathfilter/
 │   ├── matching.py          # Path/node matching (uses pre-normalized data)
 │   ├── filters.py           # Filter functions
 │   ├── evaluation.py        # Metrics calculation
+│   ├── metapath_analysis.py # Metapath enrichment analysis
 │   └── cli.py               # Command-line interface
 ├── tests/                   # Test suite (94 tests)
 ├── input_data/              # Original test data (read-only)
@@ -171,9 +269,15 @@ pathfilter/
 │   ├── Pathfinder Test Queries.xlsx.ods
 │   └── paths/               # Pre-normalized path xlsx files
 └── scripts/                 # Utility scripts
-    ├── normalize_input_data.py    # Pre-normalization script
-    ├── visualize_results.py       # Create enrichment visualizations
-    └── best_filters_table.py      # Generate best filters table
+    ├── normalize_input_data.py         # Pre-normalization script
+    ├── visualize_results.py            # Create filter enrichment visualizations
+    ├── best_filters_table.py           # Generate best filters table
+    ├── metapath_enrichment.py          # Analyze metapath enrichment per query
+    ├── aggregate_metapaths.py          # Aggregate metapath stats across queries
+    ├── sort_metapaths.py               # Sort metapath results
+    ├── plot_metapath_scatter.py        # Frequency vs enrichment scatter plot
+    ├── plot_metapath_consistency.py    # Consistency across queries plot
+    └── plot_unreliable_metapaths.py    # Complete misses analysis plot
 ```
 
 ### Key Architecture: Pre-Normalized Data

@@ -181,12 +181,23 @@ Output columns:
 
     # Analyze each query
     all_results = []
+    queries_with_no_hits = []
+
     for query in queries:
         print(f"Processing query: {query.name} ({query.start_label} → {query.end_label})")
 
         results = analyze_query_metapaths(query, args.paths_dir)
 
         if results:
+            # Check if this query has any hits at all (any enrichment > 0)
+            has_hits = any(r['enrichment'] > 0 for r in results)
+
+            if not has_hits:
+                print(f"  WARNING: Query has no hits in any metapath - EXCLUDING from output")
+                queries_with_no_hits.append(query.name)
+                print()
+                continue
+
             # Apply filters if specified
             filtered_results = [
                 r for r in results
@@ -202,7 +213,10 @@ Output columns:
 
     # Summary
     if all_results:
-        print(f"\nAnalyzed {len(queries)} queries")
+        queries_included = len(queries) - len(queries_with_no_hits)
+        print(f"\nAnalyzed {len(queries)} queries ({queries_included} with hits, {len(queries_with_no_hits)} excluded)")
+        if queries_with_no_hits:
+            print(f"Excluded queries with no hits: {', '.join(queries_with_no_hits)}")
         print(f"Total metapath entries: {len(all_results)}")
 
         # Write TSV output
