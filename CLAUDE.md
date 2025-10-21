@@ -31,6 +31,10 @@ The definitions of queries and expected results are found in input_data/Pathfind
 
 paths themselves are in input_data/paths.  Each query has its own xlsx file defined by the input curies.
 
+KGX files are describe here:
+@kgx.md
+
+A KGX version of the ROBOKOP graph is found in 
 
 ## Project Structure
 
@@ -55,7 +59,11 @@ pathfilter/
 ├── scripts/                 # Utility scripts
 │   ├── normalize_input_data.py    # Pre-normalize CURIEs for faster evaluation
 │   ├── visualize_results.py       # Create enrichment bar charts per query
-│   └── best_filters_table.py      # Generate table of best filters by query
+│   ├── best_filters_table.py      # Generate table of best filters by query
+│   ├── analyze_node_path_counts.py # Analyze node path counts and hit paths per query
+│   ├── plot_path_count_vs_hit_fraction.py # Scatter plots of path count vs hit fraction
+│   ├── calculate_node_degrees.py  # Calculate node degrees from KGX node/edge files
+│   └── join_path_counts_with_degrees.py # Join path counts with ROBOKOP node degrees
 └── docs/                    # Documentation
 ```
 
@@ -170,3 +178,4 @@ Tests marked with `@pytest.mark.slow` load real data files and make API calls.
 
 - Check git status before commits
 - Use tsv not csv.
+- For visualizations, output PNG only. Never create PDF files.
