@@ -42,7 +42,7 @@ A KGX version of the ROBOKOP graph is found in
 pathfilter/
 ├── src/pathfilter/          # Source code
 │   ├── curie_utils.py       # CURIE parsing utilities
-│   ├── query_loader.py      # Load query definitions from .ods file
+│   ├── query_loader.py      # Load queries from normalized JSON (NOT ODS)
 │   ├── path_loader.py       # Load paths from xlsx files
 │   ├── normalization.py     # Node Normalizer API client (batch processing)
 │   ├── matching.py          # Path matching with expected nodes
@@ -50,20 +50,27 @@ pathfilter/
 │   ├── evaluation.py        # Metrics calculation (recall, precision, enrichment)
 │   └── cli.py               # Command-line interface
 ├── tests/                   # 94 tests (91 fast + 3 slow)
-│   ├── test_*.py           # Unit tests for each module
+│   ├── test_normalize_input_data.py  # ODF parsing tests (slow)
+│   ├── test_query_loader.py          # JSON loading tests
 │   └── Run with: uv run pytest -m "not slow"
 ├── input_data/              # NEVER MODIFY - Read-only test data
 │   ├── Pathfinder Test Queries.xlsx.ods
 │   └── paths/*.xlsx
+├── normalized_input_data/   # AUTO-GENERATED - Pre-normalized data
+│   ├── queries_normalized.json       # Queries with normalized CURIEs
+│   └── paths/*.xlsx                  # Paths with normalized CURIEs
 ├── archive/                 # Original prototype (filter.py, paths.tsv)
 ├── scripts/                 # Utility scripts
-│   ├── normalize_input_data.py    # Pre-normalize CURIEs for faster evaluation
+│   ├── normalize_input_data.py    # Pre-normalize CURIEs (includes ODF parsing)
 │   ├── visualize_results.py       # Create enrichment bar charts per query
 │   ├── best_filters_table.py      # Generate table of best filters by query
 │   ├── analyze_node_path_counts.py # Analyze node path counts and hit paths per query
 │   ├── plot_path_count_vs_hit_fraction.py # Scatter plots of path count vs hit fraction
-│   ├── calculate_node_degrees.py  # Calculate node degrees from KGX node/edge files
-│   └── join_path_counts_with_degrees.py # Join path counts with ROBOKOP node degrees
+│   ├── calculate_node_degrees.py  # Calculate node degrees and information content from KGX
+│   ├── join_path_counts_with_degrees.py # Join path counts with ROBOKOP node degrees
+│   ├── plot_degree_vs_pathcount.py      # Degree vs path count scatter plots by query
+│   ├── plot_degree_vs_info_content.py   # Degree vs information content analysis
+│   └── normalize_missing_nodes.py       # Normalize missing expected node CURIEs
 └── docs/                    # Documentation
 ```
 
@@ -109,18 +116,43 @@ Creates a TSV table sorted by enrichment showing the best filter for each query 
 
 ## Key Implementation Details
 
-### **Pre-Normalized Architecture (IMPORTANT!)**
-- **Data is pre-normalized**: CURIEs are normalized once via `normalize_input_data.py`
-- **No API calls during evaluation**: Matching uses simple set operations
-- **16x faster**: 0.7s vs 11s per query
-- `matching.py` assumes all CURIEs are already normalized (no API calls)
-- Input data comes from `normalized_input_data/` by default
+### **Pre-Normalized Architecture (CRITICAL!)**
 
-### Node Normalization (for reference)
-- Normalization uses Node Normalizer API with conflation enabled (drug_chemical_conflate=True, conflate=True)
+**IMPORTANT FIX**: Expected nodes are now properly normalized to fix false negatives.
+
+**Architecture**:
+1. **normalize_input_data.py** (run once):
+   - Parses ODS query files (handles "garbagey" concatenated CURIEs in column C)
+   - Normalizes ALL CURIEs (start, end, expected nodes) via Node Normalizer API
+   - Saves to `normalized_input_data/queries_normalized.json` (avoids ODF writing complexity)
+   - Normalizes path xlsx files to `normalized_input_data/paths/`
+
+2. **query_loader.py** (during evaluation):
+   - ONLY loads from `queries_normalized.json` (no ODF parsing, no API calls)
+   - Auto-detects JSON if given ODS path
+   - Returns Query objects with pre-normalized CURIEs
+
+3. **matching.py** (during evaluation):
+   - Simple set operations on normalized CURIEs (no API calls)
+   - Path nodes: normalized ✓
+   - Expected nodes: normalized ✓
+   - Apples-to-apples comparison!
+
+**Critical Bug Fixed**:
+- Previously: Expected nodes NOT normalized → false negatives
+- Example: `UniProtKB:P01375` (TNF protein) vs `NCBIGene:7124` (TNF gene) = MISS ✗
+- Now: Both normalize to `NCBIGene:7124` = HIT ✓
+
+**Performance**:
+- 16x faster: 0.7s vs 11s per query
+- No redundant API calls during evaluation
+- Normalization batched efficiently in preprocessing
+
+### Node Normalization Details
+- Uses Node Normalizer API: https://nodenormalization-sri.renci.org/
+- Conflation enabled: drug_chemical_conflate=True, conflate=True
 - Returns preferred (clique leader) identifiers
-- ~96% of input CURIEs are already in normalized form
-- Normalization script batches API calls efficiently
+- ~96% of CURIEs already normalized, but architecture ensures consistency
 
 ### Filter Functions
 Migrated from archive/filter.py and adapted for Path objects:

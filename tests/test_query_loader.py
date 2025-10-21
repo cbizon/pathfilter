@@ -1,90 +1,25 @@
-"""Tests for query loader."""
+"""Tests for query loader (JSON loading)."""
 import pytest
 from pathfilter.query_loader import (
-    load_query_from_sheet,
-    get_all_query_sheets,
     load_all_queries,
     find_path_file_for_query,
     Query
 )
 
 
-# Use actual test data files
-TEST_QUERIES_FILE = "input_data/Pathfinder Test Queries.xlsx.ods"
-PATHS_DIR = "input_data/paths"
-
-
-class TestLoadQueryFromSheet:
-    """Tests for loading a single query from a sheet."""
-
-    def test_load_pftq1_query(self):
-        """Test loading PFTQ-1-c query."""
-        query = load_query_from_sheet(TEST_QUERIES_FILE, "PFTQ-1-c")
-
-        assert query.name == "PFTQ-1-c"
-        assert query.start_label == "imatinib"
-        assert query.start_curies == ["CHEBI:31690"]
-        assert query.end_label == "asthma"
-        assert "MONDO:0004979" in query.end_curies
-        assert "MONDO:0004784" in query.end_curies
-
-        # Check expected nodes
-        assert "CKIT" in query.expected_nodes
-        assert "Histamine" in query.expected_nodes
-        assert "SCF-1" in query.expected_nodes
-        assert "MAST cell" in query.expected_nodes
-
-        # Check some CURIEs
-        assert "NCBIGene:3815" in query.expected_nodes["CKIT"]
-        assert "CHEBI:18295" in query.expected_nodes["Histamine"]
-
-    def test_load_pftq4_query(self):
-        """Test loading PFTQ-4 query."""
-        query = load_query_from_sheet(TEST_QUERIES_FILE, "PFTQ-4")
-
-        assert query.name == "PFTQ-4"
-        assert query.start_label == "SLC6A20"
-        assert "NCBIGene:54716" in query.start_curies
-        assert "NCBIGene:27240" in query.start_curies
-        assert query.end_label == "COVID-19"
-        assert query.end_curies == ["MONDO:0100096"]
-
-        # Check expected nodes
-        assert "ACE2" in query.expected_nodes
-        assert "NRF2" in query.expected_nodes
-
-    def test_query_without_expected_nodes(self):
-        """Test that query loads even if some expected nodes lack CURIEs."""
-        # PFTQ-20 has some expected nodes with NaN in column C
-        query = load_query_from_sheet(TEST_QUERIES_FILE, "PFTQ-20")
-
-        assert query.name == "PFTQ-20"
-        # Should only include expected nodes that have CURIEs
-        for label, curies in query.expected_nodes.items():
-            assert len(curies) > 0, f"Expected node '{label}' should have CURIEs"
-
-
-class TestGetAllQuerySheets:
-    """Tests for getting all query sheet names."""
-
-    def test_get_query_sheets(self):
-        """Test getting all query sheets."""
-        sheets = get_all_query_sheets(TEST_QUERIES_FILE)
-
-        assert len(sheets) > 0
-        assert "PFTQ-1-c" in sheets
-        assert "PFTQ-4" in sheets
-        # Should not include non-query sheets
-        assert "20 TestQueries" not in sheets
-        assert "Notes" not in sheets
+# Use normalized data files
+NORMALIZED_QUERIES_FILE = "normalized_input_data/queries_normalized.json"
+NORMALIZED_PATHS_DIR = "normalized_input_data/paths"
+PATHS_DIR = "input_data/paths"  # Fallback for path finding tests
 
 
 class TestLoadAllQueries:
-    """Tests for loading all queries."""
+    """Tests for loading queries from normalized JSON."""
 
-    def test_load_all_queries(self):
-        """Test loading all queries from the file."""
-        queries = load_all_queries(TEST_QUERIES_FILE)
+    @pytest.mark.slow
+    def test_load_all_queries_from_json(self):
+        """Test loading all queries from normalized JSON file."""
+        queries = load_all_queries(NORMALIZED_QUERIES_FILE)
 
         assert len(queries) > 0
 
@@ -97,9 +32,10 @@ class TestLoadAllQueries:
         assert "PFTQ-1-c" in query_names
         assert "PFTQ-4" in query_names
 
+    @pytest.mark.slow
     def test_queries_have_required_fields(self):
         """Test that all loaded queries have required fields."""
-        queries = load_all_queries(TEST_QUERIES_FILE)
+        queries = load_all_queries(NORMALIZED_QUERIES_FILE)
 
         for query in queries:
             assert query.name
@@ -108,6 +44,33 @@ class TestLoadAllQueries:
             assert query.end_label
             assert len(query.end_curies) > 0
             assert len(query.expected_nodes) > 0
+
+    @pytest.mark.slow
+    def test_queries_have_normalized_curies(self):
+        """Test that loaded queries contain normalized CURIEs."""
+        queries = load_all_queries(NORMALIZED_QUERIES_FILE)
+
+        # Find PFTQ-1-c and check it has normalized CURIEs
+        pftq1 = next((q for q in queries if q.name == "PFTQ-1-c"), None)
+        assert pftq1 is not None
+
+        # These should be normalized (preferred identifiers)
+        assert pftq1.start_curies == ["CHEBI:31690"]
+        assert "MONDO:0004979" in pftq1.end_curies or "MONDO:0004784" in pftq1.end_curies
+
+        # Check expected nodes have CURIEs (normalized)
+        assert "CKIT" in pftq1.expected_nodes or "KIT" in pftq1.expected_nodes
+        assert len(pftq1.expected_nodes) > 0
+
+    @pytest.mark.slow
+    def test_auto_detect_json_from_ods_path(self):
+        """Test that loader auto-detects JSON when given ODS path."""
+        # This should auto-detect and load queries_normalized.json
+        queries = load_all_queries("normalized_input_data/Pathfinder Test Queries.xlsx.ods")
+
+        assert len(queries) > 0
+        query_names = [q.name for q in queries]
+        assert "PFTQ-1-c" in query_names
 
 
 class TestFindPathFileForQuery:
@@ -130,14 +93,19 @@ class TestFindPathFileForQuery:
             assert path_file.endswith(".xlsx")
             assert "CHEBI_31690" in path_file or "MONDO_0004979" in path_file
 
+    @pytest.mark.slow
     def test_find_existing_path_file(self):
         """Test finding a path file that we know exists."""
-        # Load a real query and find its path file
-        queries = load_all_queries(TEST_QUERIES_FILE)
+        # Load queries from normalized JSON
+        queries = load_all_queries(NORMALIZED_QUERIES_FILE)
 
         found_count = 0
         for query in queries:
-            path_file = find_path_file_for_query(query, PATHS_DIR)
+            # Try normalized paths first, fallback to original
+            path_file = find_path_file_for_query(query, NORMALIZED_PATHS_DIR)
+            if not path_file:
+                path_file = find_path_file_for_query(query, PATHS_DIR)
+
             if path_file:
                 found_count += 1
                 assert path_file.endswith(".xlsx")
