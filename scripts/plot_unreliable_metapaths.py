@@ -111,10 +111,45 @@ def main():
         ax.set_xlabel('Frequency', fontsize=9)
         ax.set_ylabel('Enrichment', fontsize=9)
 
-        # Title - abbreviated metapath
+        # Title - abbreviated metapath, split into two lines if needed
         title = metapath.replace('biolink:', '').replace('---', ' ')
-        if len(title) > 100:
-            title = title[:97] + '...'
+
+        # Split long titles into two lines at a logical point
+        if len(title) > 80:
+            # Try to split at an arrow marker around the middle
+            mid_point = len(title) // 2
+            # Look for arrow markers near the middle
+            arrows = ['->', 'affects', 'treats', 'genetically_associated',
+                      'effects_response', 'decreases_response']
+
+            best_split = None
+            best_distance = float('inf')
+
+            for arrow in arrows:
+                # Find all occurrences of this arrow
+                idx = 0
+                while idx < len(title):
+                    idx = title.find(arrow, idx)
+                    if idx == -1:
+                        break
+
+                    # Check if this is close to the middle
+                    distance = abs(idx - mid_point)
+                    if distance < best_distance and idx > 20:  # Don't split too early
+                        best_distance = distance
+                        best_split = idx
+
+                    idx += 1
+
+            # If we found a good split point, split there
+            if best_split and best_split < len(title) - 20:  # Don't split too late
+                title = title[:best_split].rstrip() + '\n' + title[best_split:].lstrip()
+            else:
+                # Fallback: split at nearest space around middle
+                space_idx = title.rfind(' ', 0, mid_point + 20)
+                if space_idx > 20:
+                    title = title[:space_idx] + '\n' + title[space_idx+1:]
+
         ax.set_title(title, fontsize=8, fontweight='bold')
 
         # Grid
@@ -125,8 +160,8 @@ def main():
     for idx in range(n_metapaths, len(axes)):
         axes[idx].set_visible(False)
 
-    # Tight layout
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    # Tight layout with extra spacing for two-line titles
+    plt.tight_layout(rect=[0, 0, 1, 0.97], h_pad=3.0)
 
     # Save
     plt.savefig(args.output, dpi=300, bbox_inches='tight')
