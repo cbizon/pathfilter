@@ -261,12 +261,60 @@ This generates:
 - `node_path_counts.tsv`: Detailed per-query node statistics with columns:
   - `Query`: Query identifier
   - `CURIE`: Node identifier
-  - `Path_Count`: Total number of paths this node appears in
+  - `Path_Count`: Total number of paths this node appears in (excludes start/end nodes)
   - `Hit_Path_Count`: Number of "hit paths" (paths containing expected nodes) this node appears in
   - `Hit_Path_Fraction`: Fraction of all hit paths in this query that contain this node
   - `Is_Expected`: Whether this is an expected node
 - `node_path_count_stats.tsv`: Summary statistics per query
 - `node_path_count_distribution.png`: Violin plots showing path count distributions for expected vs other nodes per query
+
+**Note**: Start and end nodes are excluded from counts since they appear in every path by definition.
+
+### Visualizing Path Count vs Hit Fraction
+
+Create scatter plots comparing node path counts to hit path fractions:
+
+```bash
+uv run python scripts/plot_path_count_vs_hit_fraction.py --input node_path_counts.tsv --output path_count_vs_hit_fraction.png
+```
+
+This generates a multi-panel plot with:
+- One subplot per query (4 columns)
+- X-axis: Path_Count (log scale if max > 100)
+- Y-axis: Hit_Path_Fraction
+- Colors: Red for expected nodes, Blue for other nodes
+- Helps identify whether frequently-appearing nodes correlate with hit paths
+
+## KGX Graph Node Degree Analysis
+
+Calculate node degrees (number of unique neighbors) from KGX knowledge graph files.
+
+### Running Node Degree Analysis
+
+```bash
+uv run python scripts/calculate_node_degrees.py \
+  --edges /path/to/edges.jsonl \
+  --nodes /path/to/nodes.jsonl \
+  --output node_degrees.tsv
+```
+
+This generates `node_degrees.tsv` with columns:
+- `Node_id`: CURIE identifier
+- `Name`: Node name from KGX nodes file
+- `Node_degree`: Number of unique nodes connected to this node
+
+### Node Degree Definition
+
+- **Direction-agnostic**: Both incoming and outgoing edges count
+- **Edge multiplicity ignored**: Multiple edges between same nodes = degree increment of 1
+- **Unique neighbors**: Only counts distinct connected nodes
+
+### Implementation Details
+
+- **Streaming architecture**: Processes large KGX files without loading into memory
+- **Pass 1**: Streams edges file to build neighbor sets per node
+- **Pass 2**: Streams nodes file to calculate degrees and write output
+- **Memory efficient**: Only stores `dict[node_id → set(neighbors)]` in memory
 
 ## Project Structure
 
@@ -298,7 +346,10 @@ pathfilter/
     ├── sort_metapaths.py               # Sort metapath results
     ├── plot_metapath_scatter.py        # Frequency vs enrichment scatter plot
     ├── plot_metapath_consistency.py    # Consistency across queries plot
-    └── plot_unreliable_metapaths.py    # Complete misses analysis plot
+    ├── plot_unreliable_metapaths.py    # Complete misses analysis plot
+    ├── analyze_node_path_counts.py     # Analyze node path counts and hit paths per query
+    ├── plot_path_count_vs_hit_fraction.py # Scatter plots of path count vs hit fraction
+    └── calculate_node_degrees.py       # Calculate node degrees from KGX files
 ```
 
 ### Key Architecture: Pre-Normalized Data

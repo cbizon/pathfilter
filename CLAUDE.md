@@ -60,7 +60,9 @@ pathfilter/
 │   ├── normalize_input_data.py    # Pre-normalize CURIEs for faster evaluation
 │   ├── visualize_results.py       # Create enrichment bar charts per query
 │   ├── best_filters_table.py      # Generate table of best filters by query
-│   └── analyze_node_path_counts.py # Analyze node path counts and hit paths per query
+│   ├── analyze_node_path_counts.py # Analyze node path counts and hit paths per query
+│   ├── plot_path_count_vs_hit_fraction.py # Scatter plots of path count vs hit fraction
+│   └── calculate_node_degrees.py  # Calculate node degrees from KGX node/edge files
 └── docs/                    # Documentation
 ```
 
@@ -175,3 +177,4 @@ Tests marked with `@pytest.mark.slow` load real data files and make API calls.
 
 - Check git status before commits
 - Use tsv not csv.
+- For visualizations, output PNG only. Never create PDF files.

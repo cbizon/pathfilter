@@ -17,6 +17,8 @@ def count_node_path_counts_per_query(queries, paths_dir: str) -> pd.DataFrame:
     Includes expected nodes even if they have 0 path counts.
     Also tracks "hit paths" (paths containing at least one expected node).
 
+    NOTE: Excludes start and end nodes from counts since they appear in every path.
+
     Args:
         queries: List of Query objects
         paths_dir: Directory containing path files
@@ -32,20 +34,24 @@ def count_node_path_counts_per_query(queries, paths_dir: str) -> pd.DataFrame:
         for label, curies in query.expected_nodes.items():
             expected_nodes.update(curies)
 
+        # Get start and end nodes to exclude from counts
+        start_end_nodes = set(query.start_curies) | set(query.end_curies)
+
         # Load paths and count nodes
         paths = load_paths_for_query(query, paths_dir)
         if not paths:
             print(f"Warning: No paths found for query {query.name}")
-            # Still include expected nodes with 0 counts
+            # Still include expected nodes with 0 counts (excluding start/end)
             for curie in expected_nodes:
-                all_data.append({
-                    'Query': query.name,
-                    'CURIE': curie,
-                    'Path_Count': 0,
-                    'Hit_Path_Count': 0,
-                    'Hit_Path_Fraction': 0.0,
-                    'Is_Expected': True
-                })
+                if curie not in start_end_nodes:
+                    all_data.append({
+                        'Query': query.name,
+                        'CURIE': curie,
+                        'Path_Count': 0,
+                        'Hit_Path_Count': 0,
+                        'Hit_Path_Fraction': 0.0,
+                        'Is_Expected': True
+                    })
             continue
 
         # Identify hit paths (paths containing at least one expected node)
@@ -58,12 +64,16 @@ def count_node_path_counts_per_query(queries, paths_dir: str) -> pd.DataFrame:
         total_hit_paths = len(hit_path_indices)
 
         # Count paths each node appears in (total and hit paths)
+        # EXCLUDING start and end nodes
         node_path_count = Counter()
         node_hit_path_count = Counter()
 
         for idx, path in enumerate(paths):
             is_hit_path = idx in hit_path_indices
             for curie in path.path_curies:
+                # Skip start and end nodes
+                if curie in start_end_nodes:
+                    continue
                 node_path_count[curie] += 1
                 if is_hit_path:
                     node_hit_path_count[curie] += 1
@@ -83,8 +93,9 @@ def count_node_path_counts_per_query(queries, paths_dir: str) -> pd.DataFrame:
             })
 
         # Add expected nodes that weren't found (0 count)
+        # Also exclude start/end nodes here
         found_nodes = set(node_path_count.keys())
-        missing_expected = expected_nodes - found_nodes
+        missing_expected = expected_nodes - found_nodes - start_end_nodes
         for curie in missing_expected:
             all_data.append({
                 'Query': query.name,
