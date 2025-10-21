@@ -22,71 +22,124 @@ from pathfilter.normalization import normalize_curies
 from pathfilter.curie_utils import parse_concatenated_curies, parse_path_curies
 
 
-def normalize_query_file(input_file: str, output_file: str):
+def load_query_from_ods(excel_file: str, sheet_name: str) -> dict:
     """
-    Normalize CURIEs in the query definitions file.
+    Load a single query definition from a sheet in the ODS file.
 
-    Processes each query sheet and normalizes CURIEs in column C.
+    This is the authoritative ODF parsing logic moved from query_loader.py.
+
+    Returns:
+        Dictionary with query data structure
+    """
+    df = pd.read_excel(excel_file, sheet_name=sheet_name, engine='odf')
+
+    # Extract start node
+    start_row = df[df.iloc[:, 0] == 'Start node']
+    if len(start_row) == 0:
+        raise ValueError(f"No 'Start node' row found in sheet {sheet_name}")
+
+    start_label = str(start_row.iloc[0, 1]).strip()
+    start_curies_str = str(start_row.iloc[0, 2]) if len(start_row.iloc[0]) > 2 else ""
+    start_curies = parse_concatenated_curies(start_curies_str)
+
+    # Extract end node
+    end_row = df[df.iloc[:, 0] == 'End node']
+    if len(end_row) == 0:
+        raise ValueError(f"No 'End node' row found in sheet {sheet_name}")
+
+    end_label = str(end_row.iloc[0, 1]).strip()
+    end_curies_str = str(end_row.iloc[0, 2]) if len(end_row.iloc[0]) > 2 else ""
+    end_curies = parse_concatenated_curies(end_curies_str)
+
+    # Extract expected nodes (only rows with CURIEs in column C)
+    expected_nodes = {}
+    expected_rows = df[df.iloc[:, 0] == 'Expected Node']
+    for idx, row in expected_rows.iterrows():
+        label = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+        curies_str = str(row.iloc[2]) if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+        curies = parse_concatenated_curies(curies_str)
+
+        # Only include if we have CURIEs
+        if curies:
+            expected_nodes[label] = curies
+
+    return {
+        "name": sheet_name,
+        "start_label": start_label,
+        "start_curies": start_curies,
+        "end_label": end_label,
+        "end_curies": end_curies,
+        "expected_nodes": expected_nodes
+    }
+
+
+def normalize_queries_to_json(input_file: str, output_file: str):
+    """
+    Load queries from ODS file, normalize all CURIEs, and save to JSON.
+
+    This replaces the broken ODF file writing approach.
     """
     print(f"Processing query file: {input_file}")
 
-    # Read all sheets
+    # Get all query sheets
     xls = pd.ExcelFile(input_file, engine='odf')
+    query_sheets = [s for s in xls.sheet_names if s.startswith('PFTQ-')]
 
-    # Copy the file first
-    shutil.copy(input_file, output_file)
+    print(f"  Found {len(query_sheets)} query sheets")
 
-    # Now process each sheet that looks like a query (starts with PFTQ-)
-    from odf import opendocument, table, text
-    doc = opendocument.load(input_file)
+    normalized_queries = []
 
-    for sheet_name in xls.sheet_names:
-        if not sheet_name.startswith('PFTQ-'):
+    for sheet_name in query_sheets:
+        try:
+            print(f"  Processing sheet: {sheet_name}")
+
+            # Load query using the ODF parsing logic
+            query_data = load_query_from_ods(input_file, sheet_name)
+
+            # Only process queries with complete information
+            if not query_data['expected_nodes'] or not query_data['start_curies'] or not query_data['end_curies']:
+                print(f"    Skipping - incomplete query definition")
+                continue
+
+            # Collect all CURIEs to normalize
+            all_curies = []
+            all_curies.extend(query_data['start_curies'])
+            all_curies.extend(query_data['end_curies'])
+            for curies_list in query_data['expected_nodes'].values():
+                all_curies.extend(curies_list)
+
+            print(f"    Normalizing {len(all_curies)} CURIEs...")
+
+            # Normalize them
+            normalized = normalize_curies(all_curies)
+
+            # Count changes
+            changes = sum(1 for c, n in normalized.items() if c != n and n is not None)
+            print(f"    Changed: {changes}/{len(all_curies)}")
+
+            # Apply normalization to query data
+            query_data['start_curies'] = [normalized.get(c, c) for c in query_data['start_curies'] if normalized.get(c) is not None]
+            query_data['end_curies'] = [normalized.get(c, c) for c in query_data['end_curies'] if normalized.get(c) is not None]
+
+            normalized_expected = {}
+            for label, curies in query_data['expected_nodes'].items():
+                normalized_curies = [normalized.get(c, c) for c in curies if normalized.get(c) is not None]
+                if normalized_curies:
+                    normalized_expected[label] = normalized_curies
+            query_data['expected_nodes'] = normalized_expected
+
+            normalized_queries.append(query_data)
+
+        except Exception as e:
+            print(f"    Warning: Could not load query from sheet {sheet_name}: {e}")
             continue
 
-        print(f"  Processing sheet: {sheet_name}")
+    # Write to JSON
+    import json
+    with open(output_file, 'w') as f:
+        json.dump(normalized_queries, f, indent=2)
 
-        # Read sheet
-        df = pd.read_excel(input_file, sheet_name=sheet_name, engine='odf')
-
-        # Find rows with CURIEs in column 2 (index 2)
-        curies_to_normalize = []
-        for idx, row in df.iterrows():
-            if len(row) > 2 and pd.notna(row.iloc[2]):
-                curie_str = str(row.iloc[2])
-                parsed = parse_concatenated_curies(curie_str)
-                if parsed:
-                    curies_to_normalize.extend(parsed)
-
-        if not curies_to_normalize:
-            continue
-
-        # Normalize all CURIEs for this sheet
-        print(f"    Normalizing {len(curies_to_normalize)} CURIEs...")
-        normalized = normalize_curies(curies_to_normalize)
-
-        # Count changes
-        changes = sum(1 for c, n in normalized.items() if c != n and n is not None)
-        print(f"    Changed: {changes}/{len(curies_to_normalize)}")
-
-        # Update the dataframe with normalized CURIEs
-        for idx, row in df.iterrows():
-            if len(row) > 2 and pd.notna(row.iloc[2]):
-                curie_str = str(row.iloc[2])
-                parsed = parse_concatenated_curies(curie_str)
-                if parsed:
-                    # Normalize and concatenate back
-                    normalized_curies = [normalized.get(c, c) for c in parsed if normalized.get(c) is not None]
-                    if normalized_curies:
-                        df.iat[idx, 2] = ''.join(normalized_curies)
-
-        # Write back (this is tricky with ODF, we'll use a simpler approach)
-        # For now, just print what would change
-        # Full ODF writing would require more complex code
-
-    print(f"  Query file normalization complete")
-    print(f"  NOTE: ODF file writing not fully implemented - manually copy and update")
-    print(f"  Or convert to Excel format first")
+    print(f"  Wrote {len(normalized_queries)} normalized queries to {output_file}")
 
 
 def normalize_path_file(input_file: str, output_file: str):
@@ -151,17 +204,18 @@ def main():
     print("=" * 70)
     print()
 
-    # 1. Normalize query file (tricky with ODF format)
+    # 1. Normalize query file to JSON
     query_input = input_dir / "Pathfinder Test Queries.xlsx.ods"
-    query_output = output_dir / "Pathfinder Test Queries.xlsx.ods"
+    query_output = output_dir / "queries_normalized.json"
 
     if query_input.exists():
-        print("NOTE: Query file normalization for ODF format is complex.")
-        print("For now, we recommend:")
-        print("  1. Manually copy the file to normalized_input_data/")
-        print("  2. Or convert to .xlsx format first")
+        print("Normalizing query definitions...")
         print()
-        # normalize_query_file(str(query_input), str(query_output))
+        normalize_queries_to_json(str(query_input), str(query_output))
+        print()
+    else:
+        print(f"Error: Query file not found: {query_input}")
+        return 1
 
     # 2. Normalize all path files
     paths_input = input_dir / "paths"
@@ -196,10 +250,10 @@ def main():
     print("=" * 70)
     print()
     print(f"Normalized data written to: {output_dir}")
+    print(f"  - Query definitions: {query_output}")
+    print(f"  - Path files: {paths_output}/")
     print()
-    print("Next steps:")
-    print("  1. Manually copy and normalize the query file if needed")
-    print("  2. Update CLI to use --queries-file and --paths-dir pointing to normalized_input_data/")
+    print("Query loader will automatically use normalized data.")
     print()
 
     return 0

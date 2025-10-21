@@ -323,6 +323,7 @@ This generates `node_degrees.tsv` with columns:
 - `Node_id`: CURIE identifier
 - `Name`: Node name from KGX nodes file
 - `Node_degree`: Number of unique nodes connected to this node
+- `Information_content`: Information content value (when available in KGX nodes file)
 
 ### Node Degree Definition
 
@@ -355,29 +356,57 @@ This generates `node_path_counts_with_degrees.tsv` with combined data:
 - Left join: Keeps all path count nodes, fills missing ROBOKOP data with degree=0 and empty name
 - Reports statistics on how many nodes were found vs not found in ROBOKOP
 
+### Visualizing Node Characteristics
+
+**Plot path count vs node degree by query** (colored by expected status):
+
+```bash
+uv run python scripts/plot_degree_vs_pathcount.py \
+  --input node_path_counts_with_degrees.tsv \
+  --output degree_vs_pathcount.png
+```
+
+Creates scatter plots (one per query) showing relationship between ROBOKOP node degree and path frequency, with expected nodes highlighted in red.
+
+**Plot degree vs information content**:
+
+```bash
+uv run python scripts/plot_degree_vs_info_content.py \
+  --input robokop_node_degrees.tsv \
+  --output degree_vs_info_content.png
+```
+
+Creates two visualizations:
+1. Scatter plot: Node degree (log scale) vs information content
+2. Distribution: log₁₀(degree) / information_content ratio (log count scale)
+
+Helps understand the relationship between node connectivity and information content in the knowledge graph.
+
 ## Project Structure
 
 ```
 pathfilter/
 ├── src/pathfilter/          # Source code
-│   ├── curie_utils.py       # CURIE parsing
-│   ├── query_loader.py      # Query definitions
-│   ├── path_loader.py       # Path data loading
-│   ├── normalization.py     # Node normalizer API
+│   ├── curie_utils.py       # CURIE parsing utilities
+│   ├── query_loader.py      # Load queries from normalized JSON
+│   ├── path_loader.py       # Load paths from xlsx files
+│   ├── normalization.py     # Node normalizer API client
 │   ├── matching.py          # Path/node matching (uses pre-normalized data)
 │   ├── filters.py           # Filter functions
 │   ├── evaluation.py        # Metrics calculation
 │   ├── metapath_analysis.py # Metapath enrichment analysis
 │   └── cli.py               # Command-line interface
 ├── tests/                   # Test suite (94 tests)
+│   ├── test_normalize_input_data.py  # ODF parsing tests
+│   └── test_query_loader.py          # JSON loading tests
 ├── input_data/              # Original test data (read-only)
 │   ├── Pathfinder Test Queries.xlsx.ods
 │   └── paths/               # Path xlsx files
 ├── normalized_input_data/   # Pre-normalized data (auto-generated)
-│   ├── Pathfinder Test Queries.xlsx.ods
-│   └── paths/               # Pre-normalized path xlsx files
+│   ├── queries_normalized.json       # Pre-normalized queries with expected nodes
+│   └── paths/                        # Pre-normalized path xlsx files
 └── scripts/                 # Utility scripts
-    ├── normalize_input_data.py         # Pre-normalization script
+    ├── normalize_input_data.py         # Pre-normalization script (includes ODF parsing)
     ├── visualize_results.py            # Create filter enrichment visualizations
     ├── best_filters_table.py           # Generate best filters table
     ├── metapath_enrichment.py          # Analyze metapath enrichment per query
@@ -388,18 +417,30 @@ pathfilter/
     ├── plot_unreliable_metapaths.py    # Complete misses analysis plot
     ├── analyze_node_path_counts.py     # Analyze node path counts and hit paths per query
     ├── plot_path_count_vs_hit_fraction.py # Scatter plots of path count vs hit fraction
-    ├── calculate_node_degrees.py       # Calculate node degrees from KGX files
-    └── join_path_counts_with_degrees.py # Join path counts with ROBOKOP node degrees
+    ├── calculate_node_degrees.py       # Calculate node degrees and information content from KGX files
+    ├── join_path_counts_with_degrees.py # Join path counts with ROBOKOP node degrees
+    ├── plot_degree_vs_pathcount.py     # Scatter plots of degree vs path count by query
+    ├── plot_degree_vs_info_content.py  # Degree vs information content analysis
+    └── normalize_missing_nodes.py      # Normalize CURIEs for missing expected nodes
 ```
 
 ### Key Architecture: Pre-Normalized Data
 
-The system uses a **pre-normalized architecture** for performance:
+The system uses a **pre-normalized architecture** for performance and correctness:
 
 1. **One-time normalization**: Run `scripts/normalize_input_data.py` to normalize all CURIEs upfront
+   - Parses ODF query files and normalizes start/end/expected node CURIEs
+   - Saves queries to `queries_normalized.json` for fast loading
+   - Normalizes path files to `normalized_input_data/paths/`
 2. **No API calls during evaluation**: Matching uses simple set operations on pre-normalized CURIEs
 3. **16x faster**: ~0.7s vs 11s per query evaluation
-4. **~96% already normalized**: Most CURIEs don't change, but the architecture avoids redundant API calls
+4. **Consistent normalization**: Both path nodes AND expected nodes use the same normalized identifiers
+   - **Critical fix**: Previously expected nodes weren't being normalized, causing false negatives
+   - Example: `UniProtKB:P01375` (TNF protein) and `NCBIGene:7124` (TNF gene) are the same entity
+   - Normalization maps both to `NCBIGene:7124` so matching works correctly
+5. **Separation of concerns**:
+   - `normalize_input_data.py` handles all ODF parsing and CURIE normalization
+   - `query_loader.py` only loads from pre-normalized JSON (fast, simple)
 
 ## Running Tests
 
