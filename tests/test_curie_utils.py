@@ -78,6 +78,65 @@ class TestParseConcatenatedCuries:
         result = parse_concatenated_curies("NCBIGene:4254UMLS:C4743026")
         assert result == ["NCBIGene:4254", "UMLS:C4743026"]
 
+    def test_annotation_stripping_simple(self):
+        """Test parsing CURIEs with simple text annotations."""
+        result = parse_concatenated_curies("NCBIGene:2739 -> human gene")
+        assert result == ["NCBIGene:2739"]
+
+    def test_annotation_stripping_multiple_curies(self):
+        """Test parsing multiple CURIEs with annotations from PFTQ-2-i."""
+        input_str = "NCBIGene:2739 -> human geneAraPort:AT3G14420 -> Arabidopsis geneNCBIGene:855009 -> yeast gene"
+        result = parse_concatenated_curies(input_str)
+        assert result == ["NCBIGene:2739", "AraPort:AT3G14420", "NCBIGene:855009"]
+
+    def test_annotation_stripping_concatenated_prefix(self):
+        """Test parsing CURIEs where annotation text is concatenated with next CURIE prefix."""
+        input_str = "UMLS:C5543862 -> human protein RNFT2NCBIGene:269695 -> rat geneNCBIGene:84900 -> human gene RNFT2"
+        result = parse_concatenated_curies(input_str)
+        assert result == ["UMLS:C5543862", "NCBIGene:269695", "NCBIGene:84900"]
+
+    def test_annotation_stripping_single_go_term(self):
+        """Test parsing single GO term without annotations."""
+        result = parse_concatenated_curies("GO:0034599")
+        assert result == ["GO:0034599"]
+
+
+class TestIsValidCurie:
+    """Tests for is_valid_curie validation function."""
+
+    def test_valid_curies(self):
+        """Test that valid CURIEs pass validation."""
+        from pathfilter.curie_utils import is_valid_curie
+
+        valid_curies = [
+            "CHEBI:31690",
+            "NCBIGene:2739",
+            "GO:0034599",
+            "MONDO:0004979",
+            "UniProtKB:Q14494-1",
+            "ENSEMBL:ENSG00000267497",
+        ]
+        for curie in valid_curies:
+            assert is_valid_curie(curie), f"{curie} should be valid"
+
+    def test_invalid_curies(self):
+        """Test that invalid strings fail validation."""
+        from pathfilter.curie_utils import is_valid_curie
+
+        invalid_curies = [
+            "human gene",  # No colon
+            "NCBIGene:2739 -> human gene",  # Contains annotation
+            "invalid",  # No colon
+            "TOO:MANY:COLONS",  # Multiple colons
+            "nocolon",  # No colon
+            "",  # Empty string
+            "lowercase:123",  # Prefix doesn't start with uppercase
+            "PREFIX:",  # Empty ID
+            ":12345",  # Empty prefix
+        ]
+        for curie in invalid_curies:
+            assert not is_valid_curie(curie), f"{curie} should be invalid"
+
 
 class TestParsePathCuries:
     """Tests for parse_path_curies function."""
