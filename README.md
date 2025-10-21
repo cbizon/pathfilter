@@ -31,6 +31,27 @@ uv run python scripts/normalize_input_data.py
 
 This pre-normalizes all CURIEs in the input data using the Node Normalizer API, creating a `normalized_input_data/` directory. This one-time step provides a 16x performance improvement for evaluations (~0.7s vs 11s per query).
 
+### Complete Analysis Pipeline
+
+To run the entire analysis pipeline (normalization, filter evaluation, metapath analysis, node analysis, and all visualizations):
+
+```bash
+./rerun_all.sh
+```
+
+This script runs all analyses in the correct order:
+1. Normalize input data
+2. Evaluate all filter combinations
+3. Generate filter visualizations (enrichment charts, best filters table)
+4. Run metapath enrichment analysis
+5. Generate metapath visualizations (scatter plots, consistency analysis)
+6. Analyze node path counts
+7. Calculate node degrees from ROBOKOP graph
+8. Join path counts with node degrees
+9. Generate path count visualizations
+
+**Note**: The script expects ROBOKOP graph files at `../SimplePredictions/input_graphs/robokop_base_nonredundant/`. Edit the script if your graph files are located elsewhere.
+
 ### Required Directory Structure
 
 ```
