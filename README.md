@@ -247,6 +247,27 @@ Only include metapaths appearing in 3+ queries.
 - **High `enrichment_min` with high `num_queries`**: Most reliable patterns
 - **Common patterns with `enrichment_min = 0`**: Appear frequently but fail unpredictably
 
+## Node Path Count Analysis
+
+Analyze how frequently nodes appear in paths and how this relates to expected nodes.
+
+### Running Node Path Count Analysis
+
+```bash
+uv run python scripts/analyze_node_path_counts.py
+```
+
+This generates:
+- `node_path_counts.tsv`: Detailed per-query node statistics with columns:
+  - `Query`: Query identifier
+  - `CURIE`: Node identifier
+  - `Path_Count`: Total number of paths this node appears in
+  - `Hit_Path_Count`: Number of "hit paths" (paths containing expected nodes) this node appears in
+  - `Hit_Path_Fraction`: Fraction of all hit paths in this query that contain this node
+  - `Is_Expected`: Whether this is an expected node
+- `node_path_count_stats.tsv`: Summary statistics per query
+- `node_path_count_distribution.png`: Violin plots showing path count distributions for expected vs other nodes per query
+
 ## Project Structure
 
 ```
