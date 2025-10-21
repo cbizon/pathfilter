@@ -316,6 +316,24 @@ This generates `node_degrees.tsv` with columns:
 - **Pass 2**: Streams nodes file to calculate degrees and write output
 - **Memory efficient**: Only stores `dict[node_id → set(neighbors)]` in memory
 
+### Combining Path Counts with Node Degrees
+
+Join path count analysis with ROBOKOP node degrees to understand whether hub nodes appear more frequently in paths:
+
+```bash
+uv run python scripts/join_path_counts_with_degrees.py \
+  --path-counts node_path_counts.tsv \
+  --node-degrees robokop_node_degrees.tsv \
+  --output node_path_counts_with_degrees.tsv
+```
+
+This generates `node_path_counts_with_degrees.tsv` with combined data:
+- All columns from `node_path_counts.tsv`
+- `Name`: Node name from ROBOKOP graph
+- `Node_degree`: Number of unique neighbors in ROBOKOP graph
+- Left join: Keeps all path count nodes, fills missing ROBOKOP data with degree=0 and empty name
+- Reports statistics on how many nodes were found vs not found in ROBOKOP
+
 ## Project Structure
 
 ```
@@ -349,7 +367,8 @@ pathfilter/
     ├── plot_unreliable_metapaths.py    # Complete misses analysis plot
     ├── analyze_node_path_counts.py     # Analyze node path counts and hit paths per query
     ├── plot_path_count_vs_hit_fraction.py # Scatter plots of path count vs hit fraction
-    └── calculate_node_degrees.py       # Calculate node degrees from KGX files
+    ├── calculate_node_degrees.py       # Calculate node degrees from KGX files
+    └── join_path_counts_with_degrees.py # Join path counts with ROBOKOP node degrees
 ```
 
 ### Key Architecture: Pre-Normalized Data

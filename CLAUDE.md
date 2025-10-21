@@ -62,7 +62,8 @@ pathfilter/
 │   ├── best_filters_table.py      # Generate table of best filters by query
 │   ├── analyze_node_path_counts.py # Analyze node path counts and hit paths per query
 │   ├── plot_path_count_vs_hit_fraction.py # Scatter plots of path count vs hit fraction
-│   └── calculate_node_degrees.py  # Calculate node degrees from KGX node/edge files
+│   ├── calculate_node_degrees.py  # Calculate node degrees from KGX node/edge files
+│   └── join_path_counts_with_degrees.py # Join path counts with ROBOKOP node degrees
 └── docs/                    # Documentation
 ```
 
