@@ -6,6 +6,8 @@ from pathfilter.filters import (
     no_related_to,
     no_end_pheno,
     no_chemical_start,
+    no_repeat_predicates,
+    no_abab,
     all_paths,
     apply_filters,
     DEFAULT_FILTERS,
@@ -218,3 +220,92 @@ class TestApplyFilters:
 
         filtered = apply_filters(paths, DEFAULT_FILTERS)
         assert len(filtered) == 1
+
+
+class TestNoRepeatPredicates:
+    """Tests for no_repeat_predicates filter."""
+
+    def test_all_unique_predicates_pass(self):
+        """Path with all unique predicates should pass."""
+        path = make_path(
+            first_hop="{'biolink:treats'}",
+            second_hop="{'biolink:affects'}",
+            third_hop="{'biolink:located_in'}"
+        )
+        assert no_repeat_predicates(path) is True
+
+    def test_repeated_predicate_fail(self):
+        """Path with repeated predicate should fail."""
+        path = make_path(
+            first_hop="{'biolink:affects'}",
+            second_hop="{'biolink:treats'}",
+            third_hop="{'biolink:affects'}"
+        )
+        assert no_repeat_predicates(path) is False
+
+    def test_all_same_predicates_fail(self):
+        """Path with all same predicates should fail."""
+        path = make_path(
+            first_hop="{'biolink:affects'}",
+            second_hop="{'biolink:affects'}",
+            third_hop="{'biolink:affects'}"
+        )
+        assert no_repeat_predicates(path) is False
+
+    def test_two_repeated_predicates_fail(self):
+        """Path with two instances of repeated predicate should fail."""
+        path = make_path(
+            first_hop="{'biolink:treats'}",
+            second_hop="{'biolink:treats'}",
+            third_hop="{'biolink:located_in'}"
+        )
+        assert no_repeat_predicates(path) is False
+
+
+class TestNoABAB:
+    """Tests for no_abab filter."""
+
+    def test_non_abab_pattern_pass(self):
+        """Path without ABAB pattern should pass."""
+        path = make_path("biolink:Disease --> biolink:SmallMolecule --> biolink:Gene --> biolink:AnatomicalEntity")
+        assert no_abab(path) is True
+
+    def test_abab_disease_gene_fail(self):
+        """Disease -> Gene -> Disease -> Gene should fail."""
+        path = make_path("biolink:Disease --> biolink:Gene --> biolink:Disease --> biolink:Gene")
+        assert no_abab(path) is False
+
+    def test_abab_chemical_gene_fail(self):
+        """Chemical -> Gene -> Chemical -> Gene should fail."""
+        path = make_path("biolink:SmallMolecule --> biolink:Gene --> biolink:ChemicalEntity --> biolink:Gene")
+        assert no_abab(path) is False
+
+    def test_abab_with_disease_pheno_equivalence_fail(self):
+        """Disease -> Gene -> PhenotypicFeature -> Gene should fail (Disease == Pheno)."""
+        path = make_path("biolink:Disease --> biolink:Gene --> biolink:PhenotypicFeature --> biolink:Gene")
+        assert no_abab(path) is False
+
+    def test_abab_with_protein_gene_equivalence_fail(self):
+        """Disease -> Gene -> Disease -> Protein should fail (Gene == Protein)."""
+        path = make_path("biolink:Disease --> biolink:Gene --> biolink:Disease --> biolink:Protein")
+        assert no_abab(path) is False
+
+    def test_abab_with_chemical_equivalence_fail(self):
+        """SmallMolecule -> Gene -> MolecularMixture -> Gene should fail (both chemicals)."""
+        path = make_path("biolink:SmallMolecule --> biolink:Gene --> biolink:MolecularMixture --> biolink:Gene")
+        assert no_abab(path) is False
+
+    def test_abba_pattern_pass(self):
+        """ABBA pattern should pass (not ABAB)."""
+        path = make_path("biolink:Disease --> biolink:Gene --> biolink:Gene --> biolink:Disease")
+        assert no_abab(path) is True
+
+    def test_aaab_pattern_pass(self):
+        """AAAB pattern should pass (not ABAB)."""
+        path = make_path("biolink:Disease --> biolink:Disease --> biolink:Disease --> biolink:Gene")
+        assert no_abab(path) is True
+
+    def test_all_same_type_pass(self):
+        """AAAA pattern should pass (not ABAB since A==B required for ABAB)."""
+        path = make_path("biolink:Disease --> biolink:Disease --> biolink:Disease --> biolink:Disease")
+        assert no_abab(path) is True

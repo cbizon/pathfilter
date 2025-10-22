@@ -137,28 +137,91 @@ def evaluate_filter_strategy(
 def evaluate_multiple_strategies(
     paths: List[Path],
     expected_nodes: Set[str],
-    filter_strategies: dict[str, List[FilterFunction]]
+    individual_filters: dict[str, FilterFunction],
+    max_combination_size: Optional[int] = None
 ) -> List[FilterMetrics]:
     """
-    Evaluate multiple filter strategies on the same set of paths.
+    Evaluate all combinations of filters using optimized caching approach.
+
+    Instead of re-applying filters for every combination, this function:
+    1. Applies each filter once, caching which paths pass
+    2. Computes combinations using set intersections (fast!)
+
+    This is dramatically faster: O(N*F) instead of O(N*F*C) where:
+    - N = number of paths
+    - F = number of individual filters
+    - C = number of combinations (exponential in F)
 
     ASSUMES: Paths and expected_nodes contain pre-normalized CURIEs.
 
     Args:
         paths: List of Path objects to evaluate (pre-normalized)
         expected_nodes: Set of expected node CURIEs (pre-normalized)
-        filter_strategies: Dict mapping strategy name to list of filters
+        individual_filters: Dict of filter_name -> filter_function
+        max_combination_size: Maximum filters in a combination (None = all)
 
     Returns:
-        List of FilterMetrics, one for each strategy
+        List of FilterMetrics, one for each combination
     """
+    from itertools import combinations as combo_generator
+
+    # Step 1: Apply each filter once and cache passing paths
+    filter_cache = {}
+    for filter_name, filter_func in individual_filters.items():
+        passing_paths = set()
+        for i, path in enumerate(paths):
+            if filter_func(path):
+                passing_paths.add(i)  # Store index, not object
+        filter_cache[filter_name] = passing_paths
+
+    # Baseline metrics (no filtering)
+    total_before = len(paths)
+    expected_before = count_paths_with_expected_nodes(paths, expected_nodes)
+    nodes_before = len(get_expected_nodes_found_in_paths(paths, expected_nodes))
+
     results = []
 
-    for strategy_name, filters in filter_strategies.items():
-        metrics = evaluate_filter_strategy(
-            paths, expected_nodes, filters, strategy_name
-        )
-        results.append(metrics)
+    # Baseline: no filtering
+    results.append(FilterMetrics(
+        filter_name="none",
+        total_paths_before=total_before,
+        total_paths_after=total_before,
+        expected_paths_before=expected_before,
+        expected_paths_after=expected_before,
+        expected_nodes_found_before=nodes_before,
+        expected_nodes_found_after=nodes_before
+    ))
+
+    # Step 2: Generate all combinations using set intersections
+    filter_names = list(individual_filters.keys())
+    max_size = max_combination_size if max_combination_size is not None else len(filter_names)
+
+    # Singles, pairs, triples, etc.
+    for n in range(1, max_size + 1):
+        for combo in combo_generator(filter_names, n):
+            # Intersection of all filters in this combination
+            passing_indices = filter_cache[combo[0]].copy()
+            for filter_name in combo[1:]:
+                passing_indices &= filter_cache[filter_name]
+
+            # Build list of filtered paths
+            filtered_paths = [paths[i] for i in passing_indices]
+
+            # Calculate metrics
+            total_after = len(filtered_paths)
+            expected_after = count_paths_with_expected_nodes(filtered_paths, expected_nodes)
+            nodes_after = len(get_expected_nodes_found_in_paths(filtered_paths, expected_nodes))
+
+            strategy_name = "+".join(combo)
+            results.append(FilterMetrics(
+                filter_name=strategy_name,
+                total_paths_before=total_before,
+                total_paths_after=total_after,
+                expected_paths_before=expected_before,
+                expected_paths_after=expected_after,
+                expected_nodes_found_before=nodes_before,
+                expected_nodes_found_after=nodes_after
+            ))
 
     return results
 

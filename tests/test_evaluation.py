@@ -11,7 +11,10 @@ from pathfilter.path_loader import Path
 from pathfilter.normalization import normalize_curies
 
 
-def make_path(categories="A --> B --> C --> D", curies=None):
+def make_path(categories="A --> B --> C --> D", curies=None,
+              first_hop_predicates="{'biolink:affects'}",
+              second_hop_predicates="{'biolink:affects'}",
+              third_hop_predicates="{'biolink:affects'}"):
     """Helper to create test paths."""
     if curies is None:
         curies = ["ID1", "ID2", "ID3", "ID4"]
@@ -20,9 +23,9 @@ def make_path(categories="A --> B --> C --> D", curies=None):
         path_curies=curies,
         num_paths=1,
         categories=categories,
-        first_hop_predicates="{'biolink:affects'}",
-        second_hop_predicates="{'biolink:affects'}",
-        third_hop_predicates="{'biolink:affects'}",
+        first_hop_predicates=first_hop_predicates,
+        second_hop_predicates=second_hop_predicates,
+        third_hop_predicates=third_hop_predicates,
         has_gene=True,
         metapaths="['test']"
     )
@@ -174,10 +177,10 @@ class TestEvaluateFilterStrategy:
 
 
 class TestEvaluateMultipleStrategies:
-    """Tests for evaluating multiple strategies."""
+    """Tests for evaluating multiple strategies with optimized caching."""
 
-    def test_multiple_strategies(self):
-        """Test evaluating multiple filter strategies."""
+    def test_multiple_strategies_optimized(self):
+        """Test optimized evaluation with caching generates all combinations."""
         paths = [
             make_path(
                 categories="biolink:Disease --> biolink:SmallMolecule --> biolink:Gene --> biolink:AnatomicalEntity"
@@ -187,20 +190,60 @@ class TestEvaluateMultipleStrategies:
             ),
         ]
 
-        strategies = {
-            "no_filter": [all_paths],
-            "no_dupes": [no_dupe_types]
+        individual_filters = {
+            "no_dupe_types": no_dupe_types
         }
 
         expected_set = set()
 
-        results = evaluate_multiple_strategies(paths, expected_set, strategies)
+        results = evaluate_multiple_strategies(paths, expected_set, individual_filters)
 
+        # Should generate: none (baseline), no_dupe_types (single)
         assert len(results) == 2
-        assert results[0].filter_name == "no_filter"
-        assert results[1].filter_name == "no_dupes"
-        assert results[0].total_paths_after == 2
-        assert results[1].total_paths_after == 1
+
+        # Find results by name
+        none_result = next(r for r in results if r.filter_name == "none")
+        dupe_result = next(r for r in results if r.filter_name == "no_dupe_types")
+
+        assert none_result.total_paths_after == 2
+        assert dupe_result.total_paths_after == 1
+
+    def test_combinations_generated(self):
+        """Test that all combinations are generated."""
+        from pathfilter.filters import no_expression
+
+        paths = [
+            make_path(
+                categories="biolink:Disease --> biolink:SmallMolecule --> biolink:Gene --> biolink:AnatomicalEntity",
+                first_hop_predicates="{'biolink:treats'}"
+            ),
+            make_path(
+                categories="biolink:Disease --> biolink:Disease --> biolink:Gene --> biolink:SmallMolecule",
+                first_hop_predicates="{'biolink:treats'}"
+            ),
+            make_path(
+                categories="biolink:Disease --> biolink:SmallMolecule --> biolink:Gene --> biolink:AnatomicalEntity",
+                first_hop_predicates="{'biolink:expressed_in'}"
+            ),
+        ]
+
+        individual_filters = {
+            "no_dupe_types": no_dupe_types,
+            "no_expression": no_expression
+        }
+
+        expected_set = set()
+
+        results = evaluate_multiple_strategies(paths, expected_set, individual_filters)
+
+        # Should generate: none, no_dupe_types, no_expression, no_dupe_types+no_expression
+        assert len(results) == 4
+
+        filter_names = {r.filter_name for r in results}
+        assert "none" in filter_names
+        assert "no_dupe_types" in filter_names
+        assert "no_expression" in filter_names
+        assert "no_dupe_types+no_expression" in filter_names
 
 
 class TestFormatMetricsTable:

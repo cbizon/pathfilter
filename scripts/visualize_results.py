@@ -9,8 +9,9 @@ from pathfilter.query_loader import load_all_queries
 
 
 def load_results(results_file: str) -> pd.DataFrame:
-    """Load the evaluation results CSV."""
-    return pd.read_csv(results_file)
+    """Load the evaluation results CSV/TSV."""
+    # Use pandas auto-detect for separator
+    return pd.read_csv(results_file, sep=None, engine='python')
 
 
 def get_query_names(query_file: str) -> dict:
@@ -31,6 +32,7 @@ def get_query_names(query_file: str) -> dict:
 def plot_enrichment_by_query(df: pd.DataFrame, query_names: dict, output_file: str):
     """
     Create a figure with subplots for each query showing enrichment vs filters.
+    Uses horizontal bar charts in a single column for readability with many filters.
 
     Args:
         df: Results dataframe
@@ -45,20 +47,18 @@ def plot_enrichment_by_query(df: pd.DataFrame, query_names: dict, output_file: s
     # Sort filters by complexity (number of + signs) then alphabetically
     all_filters = sorted(all_filters, key=lambda x: (x.count('+'), x))
 
-    # Calculate grid dimensions
     n_queries = len(queries)
-    n_cols = 4
-    n_rows = (n_queries + n_cols - 1) // n_cols
+    n_filters = len(all_filters)
 
-    # Create figure with subplots
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 5 * n_rows))
-    fig.suptitle('Filter Enrichment by Query', fontsize=16, y=0.995)
+    # Single column layout with horizontal bars
+    # Height based on number of filters to display
+    subplot_height = max(8, n_filters * 0.15)
+    fig, axes = plt.subplots(n_queries, 1, figsize=(12, subplot_height * n_queries))
+    fig.suptitle('Filter Enrichment by Query', fontsize=16, y=0.999)
 
-    # Flatten axes array for easier iteration
+    # Handle single query case
     if n_queries == 1:
         axes = [axes]
-    else:
-        axes = axes.flatten()
 
     # Plot each query
     for idx, query_id in enumerate(queries):
@@ -75,9 +75,9 @@ def plot_enrichment_by_query(df: pd.DataFrame, query_names: dict, output_file: s
             how='left'
         )
 
-        # Create bar chart
-        x_pos = np.arange(len(all_filters))
-        bars = ax.bar(x_pos, plot_data['enrichment'], color='steelblue', alpha=0.7)
+        # Create horizontal bar chart
+        y_pos = np.arange(len(all_filters))
+        bars = ax.barh(y_pos, plot_data['enrichment'], color='steelblue', alpha=0.7)
 
         # Color bars based on enrichment value
         for i, (bar, enrichment) in enumerate(zip(bars, plot_data['enrichment'])):
@@ -92,26 +92,25 @@ def plot_enrichment_by_query(df: pd.DataFrame, query_names: dict, output_file: s
                     bar.set_color('coral')
                     bar.set_alpha(0.7)
 
-        # Add horizontal line at y=1 (no enrichment)
-        ax.axhline(y=1.0, color='red', linestyle='--', alpha=0.5, linewidth=1)
+        # Add vertical line at x=1 (no enrichment)
+        ax.axvline(x=1.0, color='red', linestyle='--', alpha=0.5, linewidth=1)
 
         # Formatting
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(all_filters, rotation=45, ha='right', fontsize=8)
-        ax.set_ylabel('Enrichment', fontsize=10)
-        ax.set_ylim(0, max(plot_data['enrichment'].max() * 1.1, 2.0) if not plot_data['enrichment'].isna().all() else 2.0)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(all_filters, fontsize=7)
+        ax.set_xlabel('Enrichment', fontsize=10)
+        ax.set_xlim(0, max(plot_data['enrichment'].max() * 1.1, 2.0) if not plot_data['enrichment'].isna().all() else 2.0)
 
         # Title with query name
         title = query_names.get(query_id, query_id)
-        ax.set_title(title, fontsize=10, fontweight='bold')
+        ax.set_title(title, fontsize=11, fontweight='bold', pad=10)
 
         # Add grid for readability
-        ax.grid(axis='y', alpha=0.3, linestyle=':', linewidth=0.5)
+        ax.grid(axis='x', alpha=0.3, linestyle=':', linewidth=0.5)
         ax.set_axisbelow(True)
 
-    # Hide unused subplots
-    for idx in range(n_queries, len(axes)):
-        axes[idx].set_visible(False)
+        # Invert y-axis so first filter is at top
+        ax.invert_yaxis()
 
     # Adjust layout
     plt.tight_layout(rect=[0, 0, 1, 0.995])
@@ -130,8 +129,8 @@ def main():
     parser = argparse.ArgumentParser(description='Visualize filter evaluation results')
     parser.add_argument(
         '--results',
-        default='all_filter_results.csv',
-        help='Path to results CSV file (default: all_filter_results.csv)'
+        default='all_filter_results.tsv',
+        help='Path to results file (default: all_filter_results.tsv)'
     )
     parser.add_argument(
         '--queries',

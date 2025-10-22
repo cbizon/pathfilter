@@ -86,31 +86,33 @@ This creates `normalized_input_data/` with pre-normalized CURIEs. Only run once 
 
 **Evaluate all queries with all filter combinations (default):**
 ```bash
-uv run python -m pathfilter.cli --output results.csv
+uv run python -m pathfilter.cli --output results.tsv
 ```
-This tests 16 filter combinations across all queries (~5-10 minutes for 20 queries).
+This tests 64 filter combinations (6 individual filters, all combinations) across all queries (~1 minute for 20 queries).
+
+**Performance**: Uses optimized caching - applies each filter once, uses set intersections for combinations. O(N×F) instead of O(N×F×C) complexity.
 
 **Evaluate specific query:**
 ```bash
-uv run python -m pathfilter.cli --query PFTQ-4 --output results.csv
+uv run python -m pathfilter.cli --query PFTQ-4 --output results.tsv
 ```
 
 **Custom filter combinations:**
 ```bash
-uv run python -m pathfilter.cli --filters "no_dupe_types|no_expression" --output results.csv
+uv run python -m pathfilter.cli --filters "no_dupe_types|no_expression" --output results.tsv
 ```
 
 ### Visualizing Results
 
 **Create enrichment bar charts for each query:**
 ```bash
-uv run python scripts/visualize_results.py --results all_filter_results.csv --output enrichment_by_query.png
+uv run python scripts/visualize_results.py --results all_filter_results.tsv --output enrichment_by_query.png
 ```
-Generates PNG and PDF visualizations with subplots for each query showing enrichment vs filters.
+Generates PNG visualization with single-column horizontal bar layout (optimized for 64 combinations), subplots for each query showing enrichment vs filters.
 
 **Generate table of best filters per query:**
 ```bash
-uv run python scripts/best_filters_table.py --results all_filter_results.csv --output best_filters.tsv
+uv run python scripts/best_filters_table.py --results all_filter_results.tsv --output best_filters.tsv
 ```
 Creates a TSV table sorted by enrichment showing the best filter for each query (favoring simpler filters in ties).
 
@@ -161,7 +163,11 @@ Migrated from archive/filter.py and adapted for Path objects:
 - `no_related_to`: Removes generic "related_to" predicates
 - `no_end_pheno`: Filters paths ending with PhenotypicFeature → SmallMolecule
 - `no_chemical_start`: Removes Disease → Chemical starts
+- `no_repeat_predicates`: Removes paths where same predicate appears multiple times
+- `no_abab`: Removes alternating type patterns (A→B→A→B) with type equivalences (Disease/PhenotypicFeature, Chemical variants, Gene/Protein)
 - Pre-defined sets: DEFAULT_FILTERS, STRICT_FILTERS
+
+**Performance Optimization**: `evaluate_multiple_strategies()` uses caching - applies each filter once, generates combinations via set intersections. O(N×F) instead of O(N×F×C) complexity.
 
 ### Evaluation Metrics
 - **Recall**: (expected paths kept) / (expected paths total)
@@ -174,12 +180,12 @@ Migrated from archive/filter.py and adapted for Path objects:
 
 **Fast tests (for development):**
 ```bash
-uv run pytest -m "not slow"  # 91 tests in ~18 seconds
+uv run pytest -m "not slow"  # 104 tests in ~8 seconds
 ```
 
 **All tests (including slow integration tests):**
 ```bash
-uv run pytest  # 94 tests in ~2 minutes
+uv run pytest  # 116 tests in ~2 minutes
 ```
 
 Tests marked with `@pytest.mark.slow` load real data files and make API calls.
