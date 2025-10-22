@@ -28,6 +28,16 @@ def dummy_ic_50(path):
     return True
 
 
+def dummy_degree_100(path):
+    """Dummy degree filter 100."""
+    return True
+
+
+def dummy_degree_500(path):
+    """Dummy degree filter 500."""
+    return True
+
+
 class TestFilterCombinations:
     """Tests for generate_all_filter_combinations with IC filters."""
 
@@ -171,3 +181,106 @@ class TestFilterCombinations:
         for combo in ["filter_a+filter_b", "filter_a+filter_b+filter_c"]:
             filter_list = strategies[combo]
             assert all(not f.__name__.startswith("dummy_ic") for f in filter_list)
+
+    def test_no_degree_filters_combined_together(self):
+        """Degree filters should never be combined with each other."""
+        filters = {
+            "filter_a": dummy_filter_a,
+            "filter_b": dummy_filter_b,
+            "max_degree_1000": dummy_degree_100,
+            "max_degree_5000": dummy_degree_500,
+        }
+
+        strategies = generate_all_filter_combinations(filters)
+
+        # Check that no strategy contains multiple degree filters
+        for strategy_name, filter_list in strategies.items():
+            degree_count = sum(1 for f in filter_list if f.__name__.startswith("dummy_degree"))
+            assert degree_count <= 1, f"Strategy '{strategy_name}' has {degree_count} degree filters (should be 0 or 1)"
+
+    def test_no_node_filters_combined_together(self):
+        """Node filters (IC + degree) should never be combined with each other."""
+        filters = {
+            "filter_a": dummy_filter_a,
+            "filter_b": dummy_filter_b,
+            "min_ic_30": dummy_ic_30,
+            "min_ic_50": dummy_ic_50,
+            "max_degree_1000": dummy_degree_100,
+            "max_degree_5000": dummy_degree_500,
+        }
+
+        strategies = generate_all_filter_combinations(filters)
+
+        # Check that no strategy contains multiple node filters
+        for strategy_name, filter_list in strategies.items():
+            node_filter_count = sum(1 for f in filter_list
+                                   if f.__name__.startswith("dummy_ic") or f.__name__.startswith("dummy_degree"))
+            assert node_filter_count <= 1, f"Strategy '{strategy_name}' has {node_filter_count} node filters (should be 0 or 1)"
+
+    def test_ic_and_degree_with_path_filters(self):
+        """Both IC and degree filters should combine with path filters."""
+        filters = {
+            "filter_a": dummy_filter_a,
+            "filter_b": dummy_filter_b,
+            "min_ic_30": dummy_ic_30,
+            "max_degree_1000": dummy_degree_100,
+        }
+
+        strategies = generate_all_filter_combinations(filters)
+
+        # Should have combinations with IC
+        assert "filter_a+min_ic_30" in strategies
+        assert "filter_a+filter_b+min_ic_30" in strategies
+
+        # Should have combinations with degree
+        assert "filter_a+max_degree_1000" in strategies
+        assert "filter_a+filter_b+max_degree_1000" in strategies
+
+        # Should NOT have IC+degree combinations
+        assert "min_ic_30+max_degree_1000" not in strategies
+        assert "filter_a+min_ic_30+max_degree_1000" not in strategies
+
+    def test_six_path_three_ic_three_degree_filters(self):
+        """Test with realistic 6 path + 3 IC + 3 degree filters.
+
+        Formula with P path filters and N node filters (IC + degree):
+        Total = 2^P * (1 + N)
+
+        With P=6, N=6: 2^6 * (1 + 6) = 64 * 7 = 448
+        """
+        filters = {
+            "no_dupe_types": dummy_filter_a,
+            "no_expression": dummy_filter_a,
+            "no_related_to": dummy_filter_a,
+            "no_end_pheno": dummy_filter_a,
+            "no_repeat_predicates": dummy_filter_a,
+            "no_abab": dummy_filter_a,
+            "min_ic_30": dummy_ic_30,
+            "min_ic_50": dummy_ic_50,
+            "min_ic_70": dummy_ic_30,
+            "max_degree_1000": dummy_degree_100,
+            "max_degree_5000": dummy_degree_500,
+            "max_degree_10000": dummy_degree_100,
+        }
+
+        strategies = generate_all_filter_combinations(filters)
+
+        # P=6, N=6 (3 IC + 3 degree)
+        # Expected: 2^6 * (1 + 6) = 64 * 7 = 448
+        assert len(strategies) == 448
+
+    def test_no_ic_and_degree_combined(self):
+        """Verify no strategy combines IC and degree filters."""
+        filters = {
+            "filter_a": dummy_filter_a,
+            "min_ic_30": dummy_ic_30,
+            "max_degree_1000": dummy_degree_100,
+        }
+
+        strategies = generate_all_filter_combinations(filters)
+
+        # Check strategy names
+        for strategy_name in strategies.keys():
+            has_ic = "min_ic_" in strategy_name
+            has_degree = "max_degree_" in strategy_name
+            assert not (has_ic and has_degree), f"Strategy '{strategy_name}' has both IC and degree filters"

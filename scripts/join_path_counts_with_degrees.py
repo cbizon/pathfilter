@@ -47,6 +47,7 @@ def join_path_counts_with_degrees(
     # Fill missing values
     merged['Name'] = merged['Name'].fillna('')
     merged['Node_degree'] = merged['Node_degree'].fillna(0).astype(int)
+    merged['Information_content'] = merged['Information_content'].fillna(100.0)
 
     # Drop the redundant Node_id column (same as CURIE)
     if 'Node_id' in merged.columns:
@@ -55,7 +56,7 @@ def join_path_counts_with_degrees(
     # Reorder columns for clarity
     columns = [
         'Query', 'CURIE', 'Name', 'Path_Count', 'Hit_Path_Count',
-        'Hit_Path_Fraction', 'Node_degree', 'Is_Expected'
+        'Hit_Path_Fraction', 'Node_degree', 'Information_content', 'Is_Expected'
     ]
     merged = merged[columns]
 

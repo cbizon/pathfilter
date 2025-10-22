@@ -193,14 +193,17 @@ def evaluate_multiple_strategies(
     ))
 
     # Step 2: Generate all combinations using set intersections
-    # Separate IC filters from others to avoid IC+IC combinations
+    # Separate node filters (IC, degree, path_count) from path filters
+    # Node filters are never combined with each other
     filter_names = list(individual_filters.keys())
-    ic_filters = [name for name in filter_names if name.startswith("min_ic_")]
-    non_ic_filters = [name for name in filter_names if not name.startswith("min_ic_")]
+    node_filters = [name for name in filter_names
+                   if name.startswith("min_ic_") or name.startswith("max_degree_") or name.startswith("max_path_count_")]
+    path_filters = [name for name in filter_names
+                   if not (name.startswith("min_ic_") or name.startswith("max_degree_") or name.startswith("max_path_count_"))]
 
-    # Add individual IC filters
-    for ic_filter_name in ic_filters:
-        passing_indices = filter_cache[ic_filter_name]
+    # Add individual node filters
+    for node_filter_name in node_filters:
+        passing_indices = filter_cache[node_filter_name]
         filtered_paths = [paths[i] for i in passing_indices]
 
         total_after = len(filtered_paths)
@@ -208,7 +211,7 @@ def evaluate_multiple_strategies(
         nodes_after = len(get_expected_nodes_found_in_paths(filtered_paths, expected_nodes))
 
         results.append(FilterMetrics(
-            filter_name=ic_filter_name,
+            filter_name=node_filter_name,
             total_paths_before=total_before,
             total_paths_after=total_after,
             expected_paths_before=expected_before,
@@ -217,13 +220,11 @@ def evaluate_multiple_strategies(
             expected_nodes_found_after=nodes_after
         ))
 
-    max_size = max_combination_size if max_combination_size is not None else len(non_ic_filters)
+    max_size = max_combination_size if max_combination_size is not None else len(path_filters)
 
-    # Non-IC filter combinations (singles, pairs, triples, etc.)
+    # Path filter combinations (singles, pairs, triples, etc.)
     for n in range(1, max_size + 1):
-        for combo in combo_generator(non_ic_filters, n):
-            # Skip IC+IC combinations by ensuring at most 1 IC filter per combo
-            # ... actually this logic is for non_ic_filters, so we're good
+        for combo in combo_generator(path_filters, n):
 
             # Intersection of all filters in this combination
             passing_indices = filter_cache[combo[0]].copy()
@@ -249,28 +250,28 @@ def evaluate_multiple_strategies(
                 expected_nodes_found_after=nodes_after
             ))
 
-            # Also evaluate this combination with each IC filter
-            for ic_filter_name in ic_filters:
-                # Intersect with IC filter
-                ic_passing_indices = passing_indices & filter_cache[ic_filter_name]
+            # Also evaluate this combination with each node filter
+            for node_filter_name in node_filters:
+                # Intersect with node filter
+                node_passing_indices = passing_indices & filter_cache[node_filter_name]
 
                 # Build list of filtered paths
-                ic_filtered_paths = [paths[i] for i in ic_passing_indices]
+                node_filtered_paths = [paths[i] for i in node_passing_indices]
 
                 # Calculate metrics
-                ic_total_after = len(ic_filtered_paths)
-                ic_expected_after = count_paths_with_expected_nodes(ic_filtered_paths, expected_nodes)
-                ic_nodes_after = len(get_expected_nodes_found_in_paths(ic_filtered_paths, expected_nodes))
+                node_total_after = len(node_filtered_paths)
+                node_expected_after = count_paths_with_expected_nodes(node_filtered_paths, expected_nodes)
+                node_nodes_after = len(get_expected_nodes_found_in_paths(node_filtered_paths, expected_nodes))
 
-                ic_strategy_name = "+".join(combo) + "+" + ic_filter_name
+                node_strategy_name = "+".join(combo) + "+" + node_filter_name
                 results.append(FilterMetrics(
-                    filter_name=ic_strategy_name,
+                    filter_name=node_strategy_name,
                     total_paths_before=total_before,
-                    total_paths_after=ic_total_after,
+                    total_paths_after=node_total_after,
                     expected_paths_before=expected_before,
-                    expected_paths_after=ic_expected_after,
+                    expected_paths_after=node_expected_after,
                     expected_nodes_found_before=nodes_before,
-                    expected_nodes_found_after=ic_nodes_after
+                    expected_nodes_found_after=node_nodes_after
                 ))
 
     return results
