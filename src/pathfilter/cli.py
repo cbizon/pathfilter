@@ -16,7 +16,9 @@ from pathfilter.filters import (
     no_chemical_start,
     no_repeat_predicates,
     no_abab,
-    all_paths
+    all_paths,
+    load_information_content,
+    create_min_ic_filter
 )
 from itertools import combinations
 from pathfilter.evaluation import (
@@ -47,6 +49,8 @@ def generate_all_filter_combinations(
     """
     Generate all combinations of filters for comprehensive evaluation.
 
+    IC filters (min_ic_*) are never combined with each other, only with path-based filters.
+
     Args:
         filter_dict: Dict of filter_name -> filter_function. If None, uses all
                      available filters except all_paths and no_chemical_start
@@ -63,24 +67,43 @@ def generate_all_filter_combinations(
             if name not in ["all_paths", "no_chemical_start"]
         }
 
+    # Separate IC filters from path-based filters
+    ic_filters = {name: func for name, func in filter_dict.items() if name.startswith("min_ic_")}
+    path_filters = {name: func for name, func in filter_dict.items() if not name.startswith("min_ic_")}
+
     strategies = {}
 
     # Baseline: no filtering
     strategies["none"] = [all_paths]
 
-    # Individual filters
+    # Individual filters (both path and IC)
     for name, filter_func in filter_dict.items():
         strategies[name] = [filter_func]
 
-    # All combinations of 2..N filters
-    filter_names = list(filter_dict.keys())
-    max_size = max_combination_size if max_combination_size is not None else len(filter_names)
+    # All combinations of path filters (size 1 to N)
+    path_filter_names = list(path_filters.keys())
+    max_size = max_combination_size if max_combination_size is not None else len(path_filter_names)
 
-    for n in range(2, max_size + 1):
-        for combo in combinations(filter_names, n):
+    # Generate all path filter combinations (including single filters)
+    path_combinations = []
+    for n in range(1, max_size + 1):
+        path_combinations.extend(combinations(path_filter_names, n))
+
+    # For each path filter combination, create:
+    # 1. Path filters only (for n >= 2, since n=1 is already in individual filters)
+    # 2. Path filters + each IC filter
+    for combo in path_combinations:
+        if len(combo) >= 2:
+            # Add path-only combination
             strategy_name = "+".join(combo)
-            strategy_filters = [filter_dict[name] for name in combo]
+            strategy_filters = [path_filters[name] for name in combo]
             strategies[strategy_name] = strategy_filters
+
+        # Add variants with each IC filter (for all combo sizes)
+        for ic_name, ic_func in ic_filters.items():
+            strategy_name_with_ic = "+".join(combo) + "+" + ic_name
+            combo_filters = [path_filters[name] for name in combo]
+            strategies[strategy_name_with_ic] = combo_filters + [ic_func]
 
     return strategies
 
@@ -194,8 +217,14 @@ Examples:
 Available filters:
   - default: no_dupe_types + no_expression + no_related_to
   - strict: default + no_end_pheno
-  - Individual: no_dupe_types, no_expression, no_related_to, no_end_pheno, no_chemical_start
+  - Path-based: no_dupe_types, no_expression, no_related_to, no_end_pheno,
+                no_chemical_start, no_repeat_predicates, no_abab
+  - Node-based (requires --node-degrees-file): min_ic_30, min_ic_50, min_ic_70
   - none/all_paths: No filtering
+
+Node-based filters:
+  min_ic_30, min_ic_50, min_ic_70: Reject paths with any node having IC below threshold
+  (Requires robokop_node_degrees.tsv - run calculate_node_degrees.py first)
         """
     )
 
@@ -227,7 +256,35 @@ Available filters:
         help="Output file for results (CSV format). If not specified, prints to stdout."
     )
 
+    parser.add_argument(
+        "--node-degrees-file",
+        default="robokop_node_degrees.tsv",
+        help="Path to node degrees TSV file with information content data"
+    )
+
     args = parser.parse_args()
+
+    # Load IC data and create IC filters if node-degrees file exists
+    ic_filters_loaded = False
+    if FilePath(args.node_degrees_file).exists():
+        try:
+            print(f"Loading IC data from {args.node_degrees_file}...")
+            ic_data = load_information_content(args.node_degrees_file)
+
+            # Create IC filters for thresholds 30, 50, 70
+            AVAILABLE_FILTERS["min_ic_30"] = create_min_ic_filter(ic_data, min_ic=30.0)
+            AVAILABLE_FILTERS["min_ic_50"] = create_min_ic_filter(ic_data, min_ic=50.0)
+            AVAILABLE_FILTERS["min_ic_70"] = create_min_ic_filter(ic_data, min_ic=70.0)
+
+            ic_filters_loaded = True
+            print(f"IC filters loaded: min_ic_30, min_ic_50, min_ic_70")
+        except Exception as e:
+            print(f"Warning: Could not load IC data from {args.node_degrees_file}: {e}")
+            print("Continuing without IC filters")
+    else:
+        print(f"Warning: Node degrees file not found: {args.node_degrees_file}")
+        print("Continuing without IC filters. Run these first:")
+        print("  1. uv run python scripts/calculate_node_degrees.py --edges ... --nodes ... --output robokop_node_degrees.tsv")
 
     # Parse filter strategies
     individual_filters = None
@@ -240,10 +297,15 @@ Available filters:
                 name: func for name, func in AVAILABLE_FILTERS.items()
                 if name not in ["all_paths", "no_chemical_start"]
             }
-            # Calculate number of combinations for reporting
+            # Calculate number of combinations (accounting for IC filter logic)
             n_filters = len(individual_filters)
-            n_combinations = sum(1 for r in range(1, n_filters + 1)
-                               for _ in combinations(individual_filters.keys(), r)) + 1  # +1 for "none"
+            ic_count = sum(1 for name in individual_filters if name.startswith("min_ic_"))
+            non_ic_count = n_filters - ic_count
+
+            # Formula: baseline + individual + non-IC combos + (non-IC combos × IC filters)
+            # = 1 + n + (2^P - P - 1) + (2^P - 1) * I
+            # = 2^P * (1 + I) where P=non-IC count, I=IC count
+            n_combinations = (2 ** non_ic_count) * (1 + ic_count)
             print(f"Evaluating {n_combinations} filter combinations from {n_filters} individual filters")
         else:
             # Parse user-specified filters

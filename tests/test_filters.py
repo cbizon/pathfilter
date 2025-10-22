@@ -1,5 +1,7 @@
 """Tests for filter functions."""
 import pytest
+import tempfile
+import os
 from pathfilter.filters import (
     no_dupe_types,
     no_expression,
@@ -10,6 +12,8 @@ from pathfilter.filters import (
     no_abab,
     all_paths,
     apply_filters,
+    load_information_content,
+    create_min_ic_filter,
     DEFAULT_FILTERS,
     STRICT_FILTERS
 )
@@ -309,3 +313,219 @@ class TestNoABAB:
         """AAAA pattern should pass (not ABAB since A==B required for ABAB)."""
         path = make_path("biolink:Disease --> biolink:Disease --> biolink:Disease --> biolink:Disease")
         assert no_abab(path) is True
+
+
+class TestInformationContentFilters:
+    """Tests for information content-based filters."""
+
+    @pytest.fixture
+    def sample_ic_file(self):
+        """Create a temporary node_degrees file for testing."""
+        content = """Node_id\tName\tNode_degree\tInformation_content
+MONDO:0004979\tAsthma\t100\t75.5
+NCBIGene:7124\tTNF\t500\t45.2
+CHEBI:31690\tImatinib\t50\t60.0
+MONDO:0005148\tType 2 diabetes\t200\t
+UniProtKB:P12345\tSomeProtein\t10\t100.0
+PUBCHEM:12345\tGenericCompound\t5\t20.5"""
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.tsv') as f:
+            f.write(content)
+            temp_path = f.name
+
+        yield temp_path
+
+        # Cleanup
+        os.unlink(temp_path)
+
+    def test_load_information_content(self, sample_ic_file):
+        """Test loading IC data from TSV file."""
+        ic_data = load_information_content(sample_ic_file)
+
+        # Check loaded values
+        assert ic_data['MONDO:0004979'] == 75.5
+        assert ic_data['NCBIGene:7124'] == 45.2
+        assert ic_data['CHEBI:31690'] == 60.0
+        assert ic_data['UniProtKB:P12345'] == 100.0
+        assert ic_data['PUBCHEM:12345'] == 20.5
+
+        # Missing IC should be treated as 100.0
+        assert ic_data['MONDO:0005148'] == 100.0
+
+    def test_create_min_ic_filter_pass(self, sample_ic_file):
+        """Test IC filter passes paths where all nodes meet threshold."""
+        ic_data = load_information_content(sample_ic_file)
+        filter_func = create_min_ic_filter(ic_data, min_ic=40.0)
+
+        # All nodes have IC >= 40
+        path = Path(
+            path_labels="test",
+            path_curies=["MONDO:0004979", "NCBIGene:7124", "CHEBI:31690", "UniProtKB:P12345"],
+            num_paths=1,
+            categories="test",
+            first_hop_predicates="test",
+            second_hop_predicates="test",
+            third_hop_predicates="test",
+            has_gene=True,
+            metapaths="test"
+        )
+
+        assert filter_func(path) is True
+
+    def test_create_min_ic_filter_fail(self, sample_ic_file):
+        """Test IC filter rejects paths where any node is below threshold."""
+        ic_data = load_information_content(sample_ic_file)
+        filter_func = create_min_ic_filter(ic_data, min_ic=50.0)
+
+        # NCBIGene:7124 has IC=45.2, below threshold of 50
+        path = Path(
+            path_labels="test",
+            path_curies=["MONDO:0004979", "NCBIGene:7124", "CHEBI:31690", "UniProtKB:P12345"],
+            num_paths=1,
+            categories="test",
+            first_hop_predicates="test",
+            second_hop_predicates="test",
+            third_hop_predicates="test",
+            has_gene=True,
+            metapaths="test"
+        )
+
+        assert filter_func(path) is False
+
+    def test_create_min_ic_filter_missing_node(self, sample_ic_file):
+        """Test IC filter treats missing nodes as IC=100.0."""
+        ic_data = load_information_content(sample_ic_file)
+        filter_func = create_min_ic_filter(ic_data, min_ic=70.0)
+
+        # UNKNOWN:123 not in IC data, should be treated as 100.0
+        # MONDO:0004979 has IC=75.5, UniProtKB:P12345 has IC=100.0, both pass
+        path = Path(
+            path_labels="test",
+            path_curies=["MONDO:0004979", "UNKNOWN:123", "UniProtKB:P12345"],
+            num_paths=1,
+            categories="test",
+            first_hop_predicates="test",
+            second_hop_predicates="test",
+            third_hop_predicates="test",
+            has_gene=True,
+            metapaths="test"
+        )
+
+        assert filter_func(path) is True
+
+    def test_create_min_ic_filter_empty_ic(self, sample_ic_file):
+        """Test IC filter treats empty IC values as 100.0."""
+        ic_data = load_information_content(sample_ic_file)
+        filter_func = create_min_ic_filter(ic_data, min_ic=90.0)
+
+        # MONDO:0005148 has empty IC, should be treated as 100.0
+        path = Path(
+            path_labels="test",
+            path_curies=["MONDO:0005148", "UniProtKB:P12345"],
+            num_paths=1,
+            categories="test",
+            first_hop_predicates="test",
+            second_hop_predicates="test",
+            third_hop_predicates="test",
+            has_gene=True,
+            metapaths="test"
+        )
+
+        assert filter_func(path) is True
+
+    def test_min_ic_30_threshold(self, sample_ic_file):
+        """Test IC filter with threshold of 30."""
+        ic_data = load_information_content(sample_ic_file)
+        filter_func = create_min_ic_filter(ic_data, min_ic=30.0)
+
+        # PUBCHEM:12345 has IC=20.5, below threshold
+        path = Path(
+            path_labels="test",
+            path_curies=["MONDO:0004979", "PUBCHEM:12345", "CHEBI:31690", "NCBIGene:7124"],
+            num_paths=1,
+            categories="test",
+            first_hop_predicates="test",
+            second_hop_predicates="test",
+            third_hop_predicates="test",
+            has_gene=True,
+            metapaths="test"
+        )
+
+        assert filter_func(path) is False
+
+    def test_min_ic_50_threshold(self, sample_ic_file):
+        """Test IC filter with threshold of 50."""
+        ic_data = load_information_content(sample_ic_file)
+        filter_func = create_min_ic_filter(ic_data, min_ic=50.0)
+
+        # All nodes >= 50
+        path_pass = Path(
+            path_labels="test",
+            path_curies=["MONDO:0004979", "CHEBI:31690", "UniProtKB:P12345"],
+            num_paths=1,
+            categories="test",
+            first_hop_predicates="test",
+            second_hop_predicates="test",
+            third_hop_predicates="test",
+            has_gene=True,
+            metapaths="test"
+        )
+        assert filter_func(path_pass) is True
+
+        # NCBIGene:7124 has IC=45.2, below threshold
+        path_fail = Path(
+            path_labels="test",
+            path_curies=["MONDO:0004979", "NCBIGene:7124", "CHEBI:31690"],
+            num_paths=1,
+            categories="test",
+            first_hop_predicates="test",
+            second_hop_predicates="test",
+            third_hop_predicates="test",
+            has_gene=True,
+            metapaths="test"
+        )
+        assert filter_func(path_fail) is False
+
+    def test_min_ic_70_threshold(self, sample_ic_file):
+        """Test IC filter with threshold of 70."""
+        ic_data = load_information_content(sample_ic_file)
+        filter_func = create_min_ic_filter(ic_data, min_ic=70.0)
+
+        # Only MONDO:0004979 (75.5) and empty IC nodes pass
+        path_pass = Path(
+            path_labels="test",
+            path_curies=["MONDO:0004979", "MONDO:0005148", "UniProtKB:P12345"],
+            num_paths=1,
+            categories="test",
+            first_hop_predicates="test",
+            second_hop_predicates="test",
+            third_hop_predicates="test",
+            has_gene=True,
+            metapaths="test"
+        )
+        assert filter_func(path_pass) is True
+
+        # CHEBI:31690 has IC=60.0, below threshold
+        path_fail = Path(
+            path_labels="test",
+            path_curies=["MONDO:0004979", "CHEBI:31690", "UniProtKB:P12345"],
+            num_paths=1,
+            categories="test",
+            first_hop_predicates="test",
+            second_hop_predicates="test",
+            third_hop_predicates="test",
+            has_gene=True,
+            metapaths="test"
+        )
+        assert filter_func(path_fail) is False
+
+    def test_filter_function_name(self, sample_ic_file):
+        """Test that created filter has descriptive name."""
+        ic_data = load_information_content(sample_ic_file)
+        filter_30 = create_min_ic_filter(ic_data, min_ic=30.0)
+        filter_50 = create_min_ic_filter(ic_data, min_ic=50.0)
+        filter_70 = create_min_ic_filter(ic_data, min_ic=70.0)
+
+        assert filter_30.__name__ == "min_ic_30"
+        assert filter_50.__name__ == "min_ic_50"
+        assert filter_70.__name__ == "min_ic_70"

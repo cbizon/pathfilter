@@ -4,7 +4,7 @@ Each filter function takes a Path object and returns True if the path should be 
 False if it should be filtered out.
 """
 from pathfilter.path_loader import Path
-from typing import Callable, List
+from typing import Callable, Dict, List
 
 
 # Type alias for filter functions
@@ -239,6 +239,74 @@ def apply_filters(paths: List[Path], filters: List[FilterFunction]) -> List[Path
             filtered.append(path)
 
     return filtered
+
+
+# Node characteristic-based filters
+
+def load_information_content(node_degrees_file: str) -> Dict[str, float]:
+    """
+    Load information content data from node_degrees TSV file.
+
+    Args:
+        node_degrees_file: Path to robokop_node_degrees.tsv file
+
+    Returns:
+        Dictionary mapping node_id to information_content value.
+        Missing IC values are treated as 100.0 (passes all thresholds).
+    """
+    import pandas as pd
+
+    ic_data = {}
+    df = pd.read_csv(node_degrees_file, sep='\t')
+
+    for _, row in df.iterrows():
+        node_id = row['Node_id']
+        ic_value = row['Information_content']
+
+        # Treat missing/empty IC as 100.0 (very specific, passes all filters)
+        if pd.isna(ic_value) or ic_value == '':
+            ic_data[node_id] = 100.0
+        else:
+            ic_data[node_id] = float(ic_value)
+
+    return ic_data
+
+
+def create_min_ic_filter(ic_data: Dict[str, float], min_ic: float) -> FilterFunction:
+    """
+    Create a filter that rejects paths containing any node with IC below threshold.
+
+    Factory function that creates a filter with the IC data in a closure.
+
+    Args:
+        ic_data: Dictionary mapping node_id to information_content
+        min_ic: Minimum information content threshold
+
+    Returns:
+        Filter function that rejects paths with any node IC < min_ic
+    """
+    def min_ic_filter(path: Path) -> bool:
+        """
+        Filter out paths where ANY node has information content below threshold.
+
+        Nodes not in ic_data are treated as having IC=100.0 (pass all thresholds).
+
+        Args:
+            path: Path object to check
+
+        Returns:
+            True if all nodes have IC >= min_ic, False otherwise
+        """
+        for node_id in path.path_curies:
+            # Default to 100.0 if node not found (assume specific/rare)
+            ic_value = ic_data.get(node_id, 100.0)
+            if ic_value < min_ic:
+                return False
+        return True
+
+    # Set a descriptive name for the filter function
+    min_ic_filter.__name__ = f"min_ic_{int(min_ic)}"
+    return min_ic_filter
 
 
 # Pre-defined filter sets
