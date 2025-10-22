@@ -5,7 +5,7 @@ import csv
 from pathlib import Path as FilePath
 from typing import List, Optional
 
-from pathfilter.query_loader import load_all_queries, load_query_from_sheet, Query
+from pathfilter.query_loader import load_all_queries, Query
 from pathfilter.path_loader import load_paths_for_query
 from pathfilter.filters import (
     FilterFunction,
@@ -14,6 +14,8 @@ from pathfilter.filters import (
     no_related_to,
     no_end_pheno,
     no_chemical_start,
+    no_repeat_predicates,
+    no_abab,
     all_paths
 )
 from itertools import combinations
@@ -32,24 +34,34 @@ AVAILABLE_FILTERS = {
     "no_related_to": no_related_to,
     "no_end_pheno": no_end_pheno,
     "no_chemical_start": no_chemical_start,
+    "no_repeat_predicates": no_repeat_predicates,
+    "no_abab": no_abab,
     "all_paths": all_paths,
 }
 
 
-def generate_all_filter_combinations() -> dict[str, List[FilterFunction]]:
+def generate_all_filter_combinations(
+    filter_dict: Optional[dict[str, FilterFunction]] = None,
+    max_combination_size: Optional[int] = None
+) -> dict[str, List[FilterFunction]]:
     """
     Generate all combinations of filters for comprehensive evaluation.
+
+    Args:
+        filter_dict: Dict of filter_name -> filter_function. If None, uses all
+                     available filters except all_paths and no_chemical_start
+        max_combination_size: Maximum number of filters in a combination. If None,
+                              generates all combinations up to total number of filters
 
     Returns:
         Dict mapping strategy name to filter list
     """
-    # Core filters (excluding all_paths baseline and no_chemical_start)
-    core_filters = {
-        "no_dupe_types": no_dupe_types,
-        "no_expression": no_expression,
-        "no_related_to": no_related_to,
-        "no_end_pheno": no_end_pheno,
-    }
+    # Default: use all available filters except baseline and no_chemical_start
+    if filter_dict is None:
+        filter_dict = {
+            name: func for name, func in AVAILABLE_FILTERS.items()
+            if name not in ["all_paths", "no_chemical_start"]
+        }
 
     strategies = {}
 
@@ -57,24 +69,18 @@ def generate_all_filter_combinations() -> dict[str, List[FilterFunction]]:
     strategies["none"] = [all_paths]
 
     # Individual filters
-    for name, filter_func in core_filters.items():
+    for name, filter_func in filter_dict.items():
         strategies[name] = [filter_func]
 
-    # All combinations of 2 filters
-    filter_names = list(core_filters.keys())
-    for combo in combinations(filter_names, 2):
-        strategy_name = "+".join(combo)
-        strategy_filters = [core_filters[name] for name in combo]
-        strategies[strategy_name] = strategy_filters
+    # All combinations of 2..N filters
+    filter_names = list(filter_dict.keys())
+    max_size = max_combination_size if max_combination_size is not None else len(filter_names)
 
-    # All combinations of 3 filters
-    for combo in combinations(filter_names, 3):
-        strategy_name = "+".join(combo)
-        strategy_filters = [core_filters[name] for name in combo]
-        strategies[strategy_name] = strategy_filters
-
-    # All 4 filters combined
-    strategies["all_four"] = list(core_filters.values())
+    for n in range(2, max_size + 1):
+        for combo in combinations(filter_names, n):
+            strategy_name = "+".join(combo)
+            strategy_filters = [filter_dict[name] for name in combo]
+            strategies[strategy_name] = strategy_filters
 
     return strategies
 
@@ -118,7 +124,8 @@ def parse_filter_names(filter_spec: str) -> List[FilterFunction]:
 def evaluate_query(
     query: Query,
     paths_dir: str,
-    filter_strategies: dict[str, List[FilterFunction]]
+    individual_filters: Optional[dict[str, FilterFunction]] = None,
+    filter_strategies: Optional[dict[str, List[FilterFunction]]] = None
 ) -> Optional[List[FilterMetrics]]:
     """
     Evaluate filter strategies on a single query.
@@ -128,7 +135,8 @@ def evaluate_query(
     Args:
         query: Query object (with pre-normalized expected nodes)
         paths_dir: Directory containing path files (pre-normalized)
-        filter_strategies: Dict mapping strategy name to filter list
+        individual_filters: Dict of filter_name -> filter_function (for optimized evaluation)
+        filter_strategies: Dict of strategy_name -> filter_list (for custom combinations)
 
     Returns:
         List of FilterMetrics, or None if no paths found for query
@@ -148,8 +156,18 @@ def evaluate_query(
         print(f"Warning: No expected nodes for query {query.name}")
         return None
 
-    # Evaluate all strategies
-    results = evaluate_multiple_strategies(paths, expected_nodes, filter_strategies)
+    # Evaluate using optimized or custom path
+    if individual_filters is not None:
+        # Optimized: evaluate all combinations using caching
+        results = evaluate_multiple_strategies(paths, expected_nodes, individual_filters)
+    elif filter_strategies is not None:
+        # Custom: evaluate each strategy separately
+        results = []
+        for strategy_name, filters in filter_strategies.items():
+            metrics = evaluate_filter_strategy(paths, expected_nodes, filters, strategy_name)
+            results.append(metrics)
+    else:
+        raise ValueError("Must provide either individual_filters or filter_strategies")
 
     return results
 
@@ -212,11 +230,21 @@ Available filters:
     args = parser.parse_args()
 
     # Parse filter strategies
+    individual_filters = None
+    filter_strategies = None
+
     try:
         if args.filters == "all_combinations":
-            # Generate all combinations
-            filter_strategies = generate_all_filter_combinations()
-            print(f"Evaluating {len(filter_strategies)} filter combinations")
+            # Build individual filters dict for optimized evaluation
+            individual_filters = {
+                name: func for name, func in AVAILABLE_FILTERS.items()
+                if name not in ["all_paths", "no_chemical_start"]
+            }
+            # Calculate number of combinations for reporting
+            n_filters = len(individual_filters)
+            n_combinations = sum(1 for r in range(1, n_filters + 1)
+                               for _ in combinations(individual_filters.keys(), r)) + 1  # +1 for "none"
+            print(f"Evaluating {n_combinations} filter combinations from {n_filters} individual filters")
         else:
             # Parse user-specified filters
             filter_specs = [s.strip() for s in args.filters.split("|")]
@@ -233,10 +261,13 @@ Available filters:
     # Load queries
     try:
         if args.query:
-            # Load specific query
-            query = load_query_from_sheet(args.queries_file, args.query)
-            queries = [query] if query.expected_nodes else []
+            # Load all queries and filter to the requested one
+            all_queries = load_all_queries(args.queries_file)
+            queries = [q for q in all_queries if q.name == args.query]
             if not queries:
+                print(f"Error: Query {args.query} not found", file=sys.stderr)
+                return 1
+            if not queries[0].expected_nodes:
                 print(f"Error: Query {args.query} has no expected nodes", file=sys.stderr)
                 return 1
         else:
@@ -251,7 +282,11 @@ Available filters:
         print("No queries to evaluate", file=sys.stderr)
         return 1
 
-    print(f"Evaluating {len(queries)} queries with {len(filter_strategies)} filter strategies...")
+    # Report evaluation scope
+    if individual_filters:
+        print(f"Evaluating {len(queries)} queries...")
+    else:
+        print(f"Evaluating {len(queries)} queries with {len(filter_strategies)} filter strategies...")
     print()
 
     # Evaluate each query
@@ -259,7 +294,12 @@ Available filters:
     for query in queries:
         print(f"Processing query: {query.name} ({query.start_label} -> {query.end_label})")
 
-        results = evaluate_query(query, args.paths_dir, filter_strategies)
+        results = evaluate_query(
+            query,
+            args.paths_dir,
+            individual_filters=individual_filters,
+            filter_strategies=filter_strategies
+        )
 
         if results:
             # Store with query name
@@ -267,17 +307,22 @@ Available filters:
                 all_results.append((query.name, metrics))
 
             # Print results for this query (optional, can be verbose)
-            if len(filter_strategies) <= 5:  # Only print table if not too many strategies
+            n_strategies = len(results)
+            if n_strategies <= 5:  # Only print table if not too many strategies
                 print(format_metrics_table(results))
             else:
-                print(f"  Evaluated {len(results)} filter strategies")
+                print(f"  Evaluated {n_strategies} filter strategies")
             print()
 
     # Summary
     if all_results:
         print(f"\nEvaluated {len(queries)} queries")
         print(f"Total evaluations: {len(all_results)}")
-        print(f"Filter combinations tested: {len(filter_strategies)}")
+        if individual_filters:
+            n_strategies_per_query = len(all_results) // len(queries) if queries else 0
+            print(f"Filter combinations tested: {n_strategies_per_query}")
+        else:
+            print(f"Filter combinations tested: {len(filter_strategies)}")
 
         # Write CSV output if requested
         if args.output:
@@ -290,14 +335,14 @@ Available filters:
 
 
 def write_csv_output(results: List[tuple[str, FilterMetrics]], output_file: str):
-    """Write evaluation results to CSV file.
+    """Write evaluation results to TSV file.
 
     Args:
         results: List of tuples (query_name, metrics)
-        output_file: Path to output CSV file
+        output_file: Path to output TSV file
     """
     with open(output_file, 'w', newline='') as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, delimiter='\t')
 
         # Header
         writer.writerow([

@@ -65,9 +65,14 @@ class TestDoesPathContainExpectedNode:
     def test_equivalent_curies_match(self):
         """Test that equivalent CURIEs match via normalization."""
         # Use water as example - MESH:D014867 and CHEBI:15377 are equivalent
+        # First normalize the path CURIEs (as our pre-normalization does)
+        path_curies_raw = ["MONDO:0001", "MESH:D014867", "GENE:123", "CHEM:456"]
+        path_normalized = normalize_curies(path_curies_raw)
+        path_curies_normalized = [path_normalized[c] for c in path_curies_raw]
+
         path = Path(
             path_labels="A -> Water -> B -> C",
-            path_curies=["MONDO:0001", "MESH:D014867", "GENE:123", "CHEM:456"],
+            path_curies=path_curies_normalized,
             num_paths=1,
             categories="A --> B --> C --> D",
             first_hop_predicates="{'biolink:affects'}",
@@ -81,7 +86,7 @@ class TestDoesPathContainExpectedNode:
         expected_normalized = normalize_curies(["CHEBI:15377"])
         normalized_expected_set = {expected_normalized["CHEBI:15377"]}
 
-        # Should match because both normalize to same preferred ID
+        # Should match because both normalize to same preferred ID (CHEBI:15377)
         result = does_path_contain_expected_node(path, normalized_expected_set)
         assert result is True
 

@@ -97,25 +97,27 @@ pathfilter/
 ### Evaluate All Queries with All Filter Combinations (Default)
 
 ```bash
-uv run python -m pathfilter.cli --output results.csv
+uv run python -m pathfilter.cli --output results.tsv
 ```
 
-This evaluates 16 filter combinations (1 baseline + 4 individual + 6 pairs + 4 triplets + 1 all) across all queries (~5-10 minutes for 20 queries). Results are written to CSV for analysis.
+This evaluates 64 filter combinations (1 baseline + 6 individual + 15 pairs + 20 triplets + 15 quadruplets + 6 quintuplets + 1 all) across all queries (~1 minute for 20 queries). Results are written to TSV for analysis.
+
+**Performance**: Uses optimized caching (applies each filter once, uses set intersections for combinations) to achieve O(N×F) complexity instead of O(N×F×C).
 
 ### Evaluate a Single Query
 
 ```bash
-uv run python -m pathfilter.cli --query PFTQ-4 --output results.csv
+uv run python -m pathfilter.cli --query PFTQ-4 --output results.tsv
 ```
 
 ### Compare Specific Filter Strategies
 
 ```bash
 # Compare default vs strict filtering
-uv run python -m pathfilter.cli --filters "default|strict" --output results.csv
+uv run python -m pathfilter.cli --filters "default|strict" --output results.tsv
 
 # Use specific filters
-uv run python -m pathfilter.cli --filters "no_dupe_types,no_expression" --output results.csv
+uv run python -m pathfilter.cli --filters "no_dupe_types,no_expression" --output results.tsv
 ```
 
 ## Available Filters
@@ -123,11 +125,13 @@ uv run python -m pathfilter.cli --filters "no_dupe_types,no_expression" --output
 - **default**: `no_dupe_types` + `no_expression` + `no_related_to`
 - **strict**: default filters + `no_end_pheno`
 - **Individual filters**:
-  - `no_dupe_types`: Remove paths with duplicate node types
+  - `no_dupe_types`: Remove paths with duplicate node types (considers equivalences: ChemicalEntity variants → Chemical, Protein → Gene)
   - `no_expression`: Filter out `expressed_in` predicates
   - `no_related_to`: Remove generic `related_to` predicates
   - `no_end_pheno`: Filter paths ending with PhenotypicFeature→SmallMolecule
   - `no_chemical_start`: Remove paths starting with Disease→Chemical
+  - `no_repeat_predicates`: Remove paths where the same predicate appears multiple times
+  - `no_abab`: Remove paths with alternating type patterns (A→B→A→B), considering type equivalences (Disease/PhenotypicFeature, Chemical variants, Gene/Protein)
   - `all_paths`: No filtering (baseline)
 
 ## Evaluation Metrics
@@ -147,13 +151,12 @@ For each filter strategy, the system calculates:
 Create bar charts showing enrichment for each filter across all queries:
 
 ```bash
-uv run python scripts/visualize_results.py --results all_filter_results.csv --output enrichment_by_query.png
+uv run python scripts/visualize_results.py --results all_filter_results.tsv --output enrichment_by_query.png
 ```
 
 This generates:
-- PNG file with subplots for each query
-- PDF version for publication-quality graphics
-- Color-coded bars (green: strong enrichment, blue: moderate, coral: harmful)
+- PNG file with subplots for each query (single-column horizontal bar layout for readability with 64 combinations)
+- Color-coded bars (green: strong enrichment >1.5, blue: moderate ≥1.0, coral: harmful <1.0)
 - Query titles with start/end node labels
 
 ### Generate Best Filters Table
@@ -161,7 +164,7 @@ This generates:
 Create a summary table showing the best filter for each query:
 
 ```bash
-uv run python scripts/best_filters_table.py --results all_filter_results.csv --output best_filters.tsv
+uv run python scripts/best_filters_table.py --results all_filter_results.tsv --output best_filters.tsv
 ```
 
 Output includes:
