@@ -29,81 +29,149 @@ def get_query_names(query_file: str) -> dict:
     }
 
 
+def filter_frontier_strategies(df: pd.DataFrame, query_id: str) -> pd.DataFrame:
+    """
+    Filter to show only frontier strategies: singles + record-setting combinations.
+
+    Strategy:
+    1. Always show all individual filters (singles)
+    2. For combinations, only show if they set a new best or worst enrichment record
+
+    This reduces visualization from 256 to ~20-30 bars while showing what matters.
+
+    Args:
+        df: Results dataframe
+        query_id: Query to filter for
+
+    Returns:
+        Filtered dataframe with only frontier strategies
+    """
+    # Get data for this query (excluding 'none')
+    query_df = df[(df['query'] == query_id) & (df['filter_strategy'] != 'none')].copy()
+
+    # Add combo size (number of + signs + 1)
+    query_df['combo_size'] = query_df['filter_strategy'].apply(lambda x: x.count('+') + 1)
+
+    # Separate singles from combinations
+    singles = query_df[query_df['combo_size'] == 1]
+    combos = query_df[query_df['combo_size'] > 1]
+
+    if combos.empty:
+        return singles
+
+    # Track best and worst enrichment seen so far
+    best_enrichment = singles['enrichment'].max()
+    worst_enrichment = singles['enrichment'].min()
+
+    frontier_combos = []
+
+    # Process each combination size in order
+    for size in sorted(combos['combo_size'].unique()):
+        size_combos = combos[combos['combo_size'] == size]
+
+        # Find best and worst at this size
+        best_at_size = size_combos.loc[size_combos['enrichment'].idxmax()]
+        worst_at_size = size_combos.loc[size_combos['enrichment'].idxmin()]
+
+        # Add if they set new records
+        if best_at_size['enrichment'] > best_enrichment:
+            frontier_combos.append(best_at_size)
+            best_enrichment = best_at_size['enrichment']
+
+        if worst_at_size['enrichment'] < worst_enrichment and worst_at_size.name != best_at_size.name:
+            frontier_combos.append(worst_at_size)
+            worst_enrichment = worst_at_size['enrichment']
+
+    # Combine singles with frontier combos
+    if frontier_combos:
+        frontier_df = pd.concat([singles, pd.DataFrame(frontier_combos)], ignore_index=True)
+    else:
+        frontier_df = singles
+
+    # Sort by combo size then enrichment for nice display
+    frontier_df = frontier_df.sort_values(['combo_size', 'enrichment'], ascending=[True, False])
+
+    return frontier_df
+
+
 def plot_enrichment_by_query(df: pd.DataFrame, query_names: dict, output_file: str):
     """
     Create a figure with subplots for each query showing enrichment vs filters.
-    Uses horizontal bar charts in a single column for readability with many filters.
+    Uses horizontal bar charts showing only frontier filters (singles + record setters).
 
     Args:
         df: Results dataframe
         query_names: Mapping of query IDs to descriptive names
         output_file: Path to save the figure
     """
-    # Get unique queries and filters
+    # Get unique queries
     queries = sorted(df['query'].unique())
-
-    # Get all unique filters (excluding 'none') in a consistent order
-    all_filters = df[df['filter_strategy'] != 'none']['filter_strategy'].unique()
-    # Sort filters by complexity (number of + signs) then alphabetically
-    all_filters = sorted(all_filters, key=lambda x: (x.count('+'), x))
-
     n_queries = len(queries)
-    n_filters = len(all_filters)
+
+    # Filter each query to frontier strategies and collect all
+    frontier_data = []
+    for query_id in queries:
+        query_frontier = filter_frontier_strategies(df, query_id)
+        frontier_data.append(query_frontier)
+
+    # Determine max number of filters to show (for consistent subplot sizing)
+    max_filters = max(len(qf) for qf in frontier_data)
 
     # Single column layout with horizontal bars
-    # Height based on number of filters to display
-    subplot_height = max(8, n_filters * 0.15)
+    # Height based on max filters to display
+    subplot_height = max(4, max_filters * 0.3)
     fig, axes = plt.subplots(n_queries, 1, figsize=(12, subplot_height * n_queries))
-    fig.suptitle('Filter Enrichment by Query', fontsize=16, y=0.999)
+    fig.suptitle('Filter Enrichment by Query (Frontier Strategies)', fontsize=16, y=0.999)
 
     # Handle single query case
     if n_queries == 1:
         axes = [axes]
 
     # Plot each query
-    for idx, query_id in enumerate(queries):
+    for idx, (query_id, query_frontier) in enumerate(zip(queries, frontier_data)):
         ax = axes[idx]
 
-        # Get data for this query (excluding 'none' filter)
-        query_df = df[(df['query'] == query_id) & (df['filter_strategy'] != 'none')]
+        # Get filter names and enrichment values
+        filters = query_frontier['filter_strategy'].tolist()
+        enrichments = query_frontier['enrichment'].tolist()
+        combo_sizes = query_frontier['combo_size'].tolist()
 
-        # Create a dataframe with all filters (fill missing with NaN)
-        plot_data = pd.DataFrame({'filter_strategy': all_filters})
-        plot_data = plot_data.merge(
-            query_df[['filter_strategy', 'enrichment']],
-            on='filter_strategy',
-            how='left'
-        )
+        n_filters = len(filters)
 
         # Create horizontal bar chart
-        y_pos = np.arange(len(all_filters))
-        bars = ax.barh(y_pos, plot_data['enrichment'], color='steelblue', alpha=0.7)
+        y_pos = np.arange(n_filters)
+        bars = ax.barh(y_pos, enrichments, color='steelblue', alpha=0.7)
 
-        # Color bars based on enrichment value
-        for i, (bar, enrichment) in enumerate(zip(bars, plot_data['enrichment'])):
-            if pd.notna(enrichment):
-                if enrichment > 1.5:
-                    bar.set_color('darkgreen')
-                    bar.set_alpha(0.8)
-                elif enrichment >= 1.0:
-                    bar.set_color('steelblue')
-                    bar.set_alpha(0.7)
-                else:  # enrichment < 1.0
-                    bar.set_color('coral')
-                    bar.set_alpha(0.7)
+        # Color bars based on enrichment value and combo size
+        for i, (bar, enrichment, combo_size) in enumerate(zip(bars, enrichments, combo_sizes)):
+            if enrichment > 1.5:
+                bar.set_color('darkgreen')
+                bar.set_alpha(0.8)
+            elif enrichment >= 1.0:
+                bar.set_color('steelblue')
+                bar.set_alpha(0.7)
+            else:  # enrichment < 1.0
+                bar.set_color('coral')
+                bar.set_alpha(0.7)
+
+            # Slightly darken combinations to distinguish from singles
+            if combo_size > 1:
+                bar.set_alpha(bar.get_alpha() + 0.1)
 
         # Add vertical line at x=1 (no enrichment)
         ax.axvline(x=1.0, color='red', linestyle='--', alpha=0.5, linewidth=1)
 
         # Formatting
         ax.set_yticks(y_pos)
-        ax.set_yticklabels(all_filters, fontsize=7)
+        # Add combo size indicator to labels
+        labeled_filters = [f"[{cs}] {filt}" for filt, cs in zip(filters, combo_sizes)]
+        ax.set_yticklabels(labeled_filters, fontsize=8)
         ax.set_xlabel('Enrichment', fontsize=10)
-        ax.set_xlim(0, max(plot_data['enrichment'].max() * 1.1, 2.0) if not plot_data['enrichment'].isna().all() else 2.0)
+        ax.set_xlim(0, max(enrichments) * 1.1 if enrichments else 2.0)
 
-        # Title with query name
+        # Title with query name and filter count
         title = query_names.get(query_id, query_id)
-        ax.set_title(title, fontsize=11, fontweight='bold', pad=10)
+        ax.set_title(f"{title} ({n_filters} frontier strategies)", fontsize=11, fontweight='bold', pad=10)
 
         # Add grid for readability
         ax.grid(axis='x', alpha=0.3, linestyle=':', linewidth=0.5)
@@ -117,12 +185,7 @@ def plot_enrichment_by_query(df: pd.DataFrame, query_names: dict, output_file: s
 
     # Save figure
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"Saved enrichment visualization to {output_file}")
-
-    # Also save as PDF for better quality
-    pdf_file = output_file.replace('.png', '.pdf')
-    plt.savefig(pdf_file, bbox_inches='tight')
-    print(f"Saved PDF version to {pdf_file}")
+    print(f"Saved frontier enrichment visualization to {output_file}")
 
 
 def main():

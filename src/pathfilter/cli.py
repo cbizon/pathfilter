@@ -16,7 +16,13 @@ from pathfilter.filters import (
     no_chemical_start,
     no_repeat_predicates,
     no_abab,
-    all_paths
+    no_dupe_but_gene,
+    no_nonconsecutive_dupe,
+    all_paths,
+    load_node_characteristics,
+    create_min_ic_filter,
+    create_max_degree_filter,
+    create_max_path_count_filter
 )
 from itertools import combinations
 from pathfilter.evaluation import (
@@ -36,6 +42,8 @@ AVAILABLE_FILTERS = {
     "no_chemical_start": no_chemical_start,
     "no_repeat_predicates": no_repeat_predicates,
     "no_abab": no_abab,
+    "no_dupe_but_gene": no_dupe_but_gene,
+    "no_nonconsecutive_dupe": no_nonconsecutive_dupe,
     "all_paths": all_paths,
 }
 
@@ -46,6 +54,9 @@ def generate_all_filter_combinations(
 ) -> dict[str, List[FilterFunction]]:
     """
     Generate all combinations of filters for comprehensive evaluation.
+
+    Node filters (min_ic_*, max_degree_*) are never combined with each other,
+    only with path-based filters.
 
     Args:
         filter_dict: Dict of filter_name -> filter_function. If None, uses all
@@ -63,24 +74,45 @@ def generate_all_filter_combinations(
             if name not in ["all_paths", "no_chemical_start"]
         }
 
+    # Separate node filters (IC, degree) from path-based filters
+    node_filters = {name: func for name, func in filter_dict.items()
+                   if name.startswith("min_ic_") or name.startswith("max_degree_")}
+    path_filters = {name: func for name, func in filter_dict.items()
+                   if not (name.startswith("min_ic_") or name.startswith("max_degree_"))}
+
     strategies = {}
 
     # Baseline: no filtering
     strategies["none"] = [all_paths]
 
-    # Individual filters
+    # Individual filters (both path and IC)
     for name, filter_func in filter_dict.items():
         strategies[name] = [filter_func]
 
-    # All combinations of 2..N filters
-    filter_names = list(filter_dict.keys())
-    max_size = max_combination_size if max_combination_size is not None else len(filter_names)
+    # All combinations of path filters (size 1 to N)
+    path_filter_names = list(path_filters.keys())
+    max_size = max_combination_size if max_combination_size is not None else len(path_filter_names)
 
-    for n in range(2, max_size + 1):
-        for combo in combinations(filter_names, n):
+    # Generate all path filter combinations (including single filters)
+    path_combinations = []
+    for n in range(1, max_size + 1):
+        path_combinations.extend(combinations(path_filter_names, n))
+
+    # For each path filter combination, create:
+    # 1. Path filters only (for n >= 2, since n=1 is already in individual filters)
+    # 2. Path filters + each node filter
+    for combo in path_combinations:
+        if len(combo) >= 2:
+            # Add path-only combination
             strategy_name = "+".join(combo)
-            strategy_filters = [filter_dict[name] for name in combo]
+            strategy_filters = [path_filters[name] for name in combo]
             strategies[strategy_name] = strategy_filters
+
+        # Add variants with each node filter (for all combo sizes)
+        for node_name, node_func in node_filters.items():
+            strategy_name_with_node = "+".join(combo) + "+" + node_name
+            combo_filters = [path_filters[name] for name in combo]
+            strategies[strategy_name_with_node] = combo_filters + [node_func]
 
     return strategies
 
@@ -194,8 +226,15 @@ Examples:
 Available filters:
   - default: no_dupe_types + no_expression + no_related_to
   - strict: default + no_end_pheno
-  - Individual: no_dupe_types, no_expression, no_related_to, no_end_pheno, no_chemical_start
+  - Path-based: no_dupe_types, no_expression, no_related_to, no_end_pheno,
+                no_chemical_start, no_repeat_predicates, no_abab,
+                no_dupe_but_gene, no_nonconsecutive_dupe
+  - Node-based (requires --node-degrees-file): min_ic_30, min_ic_50, min_ic_70
   - none/all_paths: No filtering
+
+Node-based filters:
+  min_ic_30, min_ic_50, min_ic_70: Reject paths with any node having IC below threshold
+  (Requires robokop_node_degrees.tsv - run calculate_node_degrees.py first)
         """
     )
 
@@ -227,7 +266,45 @@ Available filters:
         help="Output file for results (CSV format). If not specified, prints to stdout."
     )
 
+    parser.add_argument(
+        "--node-degrees-file",
+        default="node_path_counts_with_degrees.tsv",
+        help="Path to node characteristics TSV file with IC, degree, and path count data"
+    )
+
     args = parser.parse_args()
+
+    # Load node characteristics (IC, degree, and path counts) and create filters if file exists
+    node_filters_loaded = False
+    path_count_data = {}  # Store for future use
+    if FilePath(args.node_degrees_file).exists():
+        try:
+            print(f"Loading node characteristics from {args.node_degrees_file}...")
+            ic_data, degree_data, path_count_data = load_node_characteristics(args.node_degrees_file)
+
+            # Create IC filters for thresholds 30, 50, 70
+            AVAILABLE_FILTERS["min_ic_30"] = create_min_ic_filter(ic_data, min_ic=30.0)
+            AVAILABLE_FILTERS["min_ic_50"] = create_min_ic_filter(ic_data, min_ic=50.0)
+            AVAILABLE_FILTERS["min_ic_70"] = create_min_ic_filter(ic_data, min_ic=70.0)
+
+            # Create degree filters for thresholds 1000, 5000, 10000
+            AVAILABLE_FILTERS["max_degree_1000"] = create_max_degree_filter(degree_data, max_degree=1000)
+            AVAILABLE_FILTERS["max_degree_5000"] = create_max_degree_filter(degree_data, max_degree=5000)
+            AVAILABLE_FILTERS["max_degree_10000"] = create_max_degree_filter(degree_data, max_degree=10000)
+
+            node_filters_loaded = True
+            print(f"Node filters loaded:")
+            print(f"  IC: min_ic_30, min_ic_50, min_ic_70")
+            print(f"  Degree: max_degree_1000, max_degree_5000, max_degree_10000")
+        except Exception as e:
+            print(f"Warning: Could not load node characteristics from {args.node_degrees_file}: {e}")
+            print("Continuing without node-based filters")
+    else:
+        print(f"Warning: Node characteristics file not found: {args.node_degrees_file}")
+        print("Continuing without node-based filters. Run rerun_all.sh or these steps:")
+        print("  1. uv run python scripts/calculate_node_degrees.py")
+        print("  2. uv run python scripts/analyze_node_path_counts.py")
+        print("  3. uv run python scripts/join_path_counts_with_degrees.py")
 
     # Parse filter strategies
     individual_filters = None
@@ -240,11 +317,21 @@ Available filters:
                 name: func for name, func in AVAILABLE_FILTERS.items()
                 if name not in ["all_paths", "no_chemical_start"]
             }
-            # Calculate number of combinations for reporting
+            # Calculate number of combinations (accounting for node filter logic)
+            # Node filters (IC, degree, path_count) are never combined with each other
+            # Path count filters are added per query, so actual combinations will vary
             n_filters = len(individual_filters)
-            n_combinations = sum(1 for r in range(1, n_filters + 1)
-                               for _ in combinations(individual_filters.keys(), r)) + 1  # +1 for "none"
-            print(f"Evaluating {n_combinations} filter combinations from {n_filters} individual filters")
+            node_filter_count = sum(1 for name in individual_filters
+                                   if name.startswith("min_ic_") or name.startswith("max_degree_"))
+            path_filter_count = n_filters - node_filter_count
+
+            # Base combinations with global node filters (IC + degree)
+            # With path count filters added per query: +3 more node filters
+            # Formula: 2^P * (1 + N) where P=path filters, N=node filters (global + per-query)
+            base_combinations = (2 ** path_filter_count) * (1 + node_filter_count)
+            with_path_count = (2 ** path_filter_count) * (1 + node_filter_count + 3)  # +3 for p90, p95, p99
+            print(f"Evaluating filter combinations: {base_combinations} baseline + 3 path_count filters per query = {with_path_count} per query")
+            print(f"  From {n_filters} global filters (6 path + {node_filter_count} node)")
         else:
             # Parse user-specified filters
             filter_specs = [s.strip() for s in args.filters.split("|")]
@@ -294,11 +381,38 @@ Available filters:
     for query in queries:
         print(f"Processing query: {query.name} ({query.start_label} -> {query.end_label})")
 
+        # Create query-specific filters (path count filters)
+        query_individual_filters = individual_filters.copy() if individual_filters else None
+        query_filter_strategies = filter_strategies
+
+        if path_count_data and query.name in path_count_data:
+            # Calculate percentiles for this query
+            query_path_counts = list(path_count_data[query.name].values())
+            if query_path_counts:
+                import numpy as np
+                p90 = int(np.percentile(query_path_counts, 90))
+                p95 = int(np.percentile(query_path_counts, 95))
+                p99 = int(np.percentile(query_path_counts, 99))
+
+                print(f"  Path count percentiles: 90th={p90}, 95th={p95}, 99th={p99}")
+
+                # Create query-specific path count filters
+                if query_individual_filters is not None:
+                    query_individual_filters[f"max_path_count_p90"] = create_max_path_count_filter(
+                        path_count_data[query.name], p90
+                    )
+                    query_individual_filters[f"max_path_count_p95"] = create_max_path_count_filter(
+                        path_count_data[query.name], p95
+                    )
+                    query_individual_filters[f"max_path_count_p99"] = create_max_path_count_filter(
+                        path_count_data[query.name], p99
+                    )
+
         results = evaluate_query(
             query,
             args.paths_dir,
-            individual_filters=individual_filters,
-            filter_strategies=filter_strategies
+            individual_filters=query_individual_filters,
+            filter_strategies=query_filter_strategies
         )
 
         if results:
