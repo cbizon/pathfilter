@@ -100,7 +100,7 @@ pathfilter/
 uv run python -m pathfilter.cli --output results.tsv
 ```
 
-This evaluates 64 filter combinations (1 baseline + 6 individual + 15 pairs + 20 triplets + 15 quadruplets + 6 quintuplets + 1 all) across all queries (~1 minute for 20 queries). Results are written to TSV for analysis.
+This evaluates 256 filter combinations (2^8 path filters) across all queries (~1 minute for 20 queries). With node-based filters, this increases to 1,792 combinations. Results are written to TSV for analysis.
 
 **Performance**: Uses optimized caching (applies each filter once, uses set intersections for combinations) to achieve O(N×F) complexity instead of O(N×F×C).
 
@@ -124,8 +124,10 @@ uv run python -m pathfilter.cli --filters "no_dupe_types,no_expression" --output
 
 - **default**: `no_dupe_types` + `no_expression` + `no_related_to`
 - **strict**: default filters + `no_end_pheno`
-- **Individual filters**:
-  - `no_dupe_types`: Remove paths with duplicate node types (considers equivalences: ChemicalEntity variants → Chemical, Protein → Gene)
+- **Path-based filters**:
+  - `no_dupe_types`: Remove paths with duplicate node types (requires 4 unique types after normalization: ChemicalEntity variants → Chemical, Protein → Gene)
+  - `no_dupe_but_gene`: Like `no_dupe_types`, but allows Gene/Protein duplicates while requiring all other types to be unique
+  - `no_nonconsecutive_dupe`: Remove paths where the same type appears at non-consecutive positions (A→B→A filtered, A→A→B allowed)
   - `no_expression`: Filter out `expressed_in` predicates
   - `no_related_to`: Remove generic `related_to` predicates
   - `no_end_pheno`: Filter paths ending with PhenotypicFeature→SmallMolecule
@@ -133,6 +135,10 @@ uv run python -m pathfilter.cli --filters "no_dupe_types,no_expression" --output
   - `no_repeat_predicates`: Remove paths where the same predicate appears multiple times
   - `no_abab`: Remove paths with alternating type patterns (A→B→A→B), considering type equivalences (Disease/PhenotypicFeature, Chemical variants, Gene/Protein)
   - `all_paths`: No filtering (baseline)
+- **Node-based filters** (require `node_path_counts_with_degrees.tsv`):
+  - `min_ic_30`, `min_ic_50`, `min_ic_70`: Remove paths with any intermediate node having information content below threshold
+  - `max_degree_1000`, `max_degree_5000`, `max_degree_10000`: Remove paths with any intermediate node having degree above threshold
+  - Node filters only check intermediate nodes (positions 1 and 2), not start/end nodes
 
 ## Evaluation Metrics
 
@@ -399,7 +405,7 @@ pathfilter/
 │   ├── evaluation.py        # Metrics calculation
 │   ├── metapath_analysis.py # Metapath enrichment analysis
 │   └── cli.py               # Command-line interface
-├── tests/                   # Test suite (94 tests)
+├── tests/                   # Test suite (168 tests: 156 fast + 12 slow)
 │   ├── test_normalize_input_data.py  # ODF parsing tests
 │   └── test_query_loader.py          # JSON loading tests
 ├── input_data/              # Original test data (read-only)

@@ -49,7 +49,7 @@ pathfilter/
 │   ├── filters.py           # Filter functions (no_dupe_types, no_expression, etc.)
 │   ├── evaluation.py        # Metrics calculation (recall, precision, enrichment)
 │   └── cli.py               # Command-line interface
-├── tests/                   # 94 tests (91 fast + 3 slow)
+├── tests/                   # 168 tests (156 fast + 12 slow)
 │   ├── test_normalize_input_data.py  # ODF parsing tests (slow)
 │   ├── test_query_loader.py          # JSON loading tests
 │   └── Run with: uv run pytest -m "not slow"
@@ -156,7 +156,7 @@ uv run python scripts/visualize_results.py --results all_filter_results.tsv --ou
 Generates PNG visualization using **frontier filtering** to reduce clutter:
 - Shows ALL individual filters (to see baseline performance)
 - Only shows combinations that set new best/worst enrichment records
-- Reduces 256 combinations → ~10-20 bars per query
+- Reduces 1,792 combinations → ~10-20 bars per query
 - Filter labels prefixed with `[combo_size]` for clarity
 - Color coded: Green (>1.5x), Blue (≥1.0x), Coral (<1.0x)
 
@@ -238,8 +238,10 @@ These characteristics enable filtering strategies like:
 
 ### Filter Functions
 
-**Path-Based Filters** (migrated from archive/filter.py):
+**Path-Based Filters** (8 total):
 - `no_dupe_types`: Ensures 4 unique node types (ChemicalEntity variants → ChemicalEntity, Protein → Gene)
+- `no_dupe_but_gene`: Like no_dupe_types, but allows Gene/Protein duplicates while requiring all other types unique
+- `no_nonconsecutive_dupe`: Removes paths where same type appears non-consecutively (A→B→A filtered, A→A→B allowed)
 - `no_expression`: Filters out "expressed_in" predicates
 - `no_related_to`: Removes generic "related_to" predicates
 - `no_end_pheno`: Filters paths ending with PhenotypicFeature → SmallMolecule
@@ -247,12 +249,13 @@ These characteristics enable filtering strategies like:
 - `no_repeat_predicates`: Removes paths where same predicate appears multiple times
 - `no_abab`: Removes alternating type patterns (A→B→A→B) with type equivalences (Disease/PhenotypicFeature, Chemical variants, Gene/Protein)
 
-**Node-Based Filters** (require robokop_node_degrees.tsv):
-- `min_ic_30`: Remove paths with any node having information content < 30
-- `min_ic_50`: Remove paths with any node having information content < 50
-- `min_ic_70`: Remove paths with any node having information content < 70
+**Node-Based Filters** (require node_path_counts_with_degrees.tsv):
+- **IC filters**: `min_ic_30`, `min_ic_50`, `min_ic_70` - Remove paths with any intermediate node having information content < threshold
+- **Degree filters**: `max_degree_1000`, `max_degree_5000`, `max_degree_10000` - Remove paths with any intermediate node having degree > threshold
 - Nodes with missing IC treated as 100.0 (very specific, pass all thresholds)
-- IC filters NEVER combined with each other, only with path-based filters
+- Nodes with missing degree treated as 0 (no connections, pass all max_degree thresholds)
+- Only check intermediate nodes (positions 1 and 2), NOT start/end nodes (query-specific)
+- Node filters NEVER combined with each other, only with path-based filters
 
 **Pre-defined Filter Sets**:
 - `DEFAULT_FILTERS`: no_dupe_types + no_expression + no_related_to
@@ -261,8 +264,8 @@ These characteristics enable filtering strategies like:
 **Performance Optimization**:
 - `evaluate_multiple_strategies()` uses caching - applies each filter once, generates combinations via set intersections
 - O(N×F) instead of O(N×F×C) complexity
-- Smart combination logic prevents redundant IC+IC combinations
-- With 6 path filters + 3 IC filters: 256 combinations (not 512)
+- Smart combination logic prevents redundant node filter combinations
+- With 8 path filters + 6 node filters: 1,792 combinations (2^8 × 7)
 
 ### Evaluation Metrics
 - **Recall**: (expected paths kept) / (expected paths total)
@@ -275,12 +278,12 @@ These characteristics enable filtering strategies like:
 
 **Fast tests (for development):**
 ```bash
-uv run pytest -m "not slow"  # 104 tests in ~8 seconds
+uv run pytest -m "not slow"  # 156 tests in ~7 seconds
 ```
 
 **All tests (including slow integration tests):**
 ```bash
-uv run pytest  # 116 tests in ~2 minutes
+uv run pytest  # 168 tests in ~2 minutes
 ```
 
 Tests marked with `@pytest.mark.slow` load real data files and make API calls.
