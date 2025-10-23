@@ -41,13 +41,13 @@ To run the entire analysis pipeline (normalization, filter evaluation, metapath 
 
 This script runs all analyses in the correct order:
 1. Normalize input data
-2. Evaluate all filter combinations
-3. Generate filter visualizations (enrichment charts, best filters table)
-4. Run metapath enrichment analysis
-5. Generate metapath visualizations (scatter plots, consistency analysis)
-6. Analyze node path counts
-7. Calculate node degrees from ROBOKOP graph
-8. Join path counts with node degrees
+2. Calculate node degrees and information content from ROBOKOP graph
+3. Analyze node path counts
+4. Join path counts with node degrees
+5. Evaluate all filter combinations
+6. Generate filter visualizations (enrichment charts, best filters table, Pareto front plots)
+7. Run metapath enrichment analysis
+8. Generate metapath visualizations (scatter plots, consistency analysis)
 9. Generate path count visualizations
 
 **Note**: The script expects ROBOKOP graph files at `../SimplePredictions/input_graphs/robokop_base_nonredundant/`. Edit the script if your graph files are located elsewhere.
@@ -179,6 +179,28 @@ Output includes:
 - Enrichment factor
 - Sorted by enrichment (highest to lowest)
 - Statistics on most common effective filters
+
+### Generate Precision-Recall Pareto Front Plots
+
+Identify optimal filter combinations that maximize both precision and recall:
+
+```bash
+uv run python scripts/plot_precision_recall.py --results all_filter_results.tsv --output precision_recall.png --pareto-output pareto_optimal_points.tsv
+```
+
+This generates:
+- **PNG visualization**: One subplot per query showing all filter combinations as scatter plot
+  - Blue dots: Dominated filter combinations
+  - Red stars: Pareto optimal (non-dominated) filters
+  - Legend on right: Lists filtered Pareto points with precision/recall values
+  - Subplot titles include descriptive query names (e.g., "PFTQ-10: imatinib → asthma")
+- **TSV table**: `pareto_optimal_points.tsv` with columns: `Query | rule | precision | recall`
+  - Automatically filters out (0, 0) points
+  - Removes redundant filter combinations (only keeps simplest filters when multiple have same precision/recall)
+  - Example: If "no_dupe_types, no_expression" and "no_dupe_types, no_expression, no_related_to" have identical values, only the simpler one is kept
+  - Sorted by query, then precision (descending)
+
+**Pareto optimality**: A filter combination is Pareto optimal if no other combination achieves both higher precision AND higher recall. These represent the best tradeoff choices between the two metrics.
 
 ## Metapath Enrichment Analysis
 
@@ -418,6 +440,7 @@ pathfilter/
     ├── normalize_input_data.py         # Pre-normalization script (includes ODF parsing)
     ├── visualize_results.py            # Create filter enrichment visualizations
     ├── best_filters_table.py           # Generate best filters table
+    ├── plot_precision_recall.py        # Create Pareto front precision-recall plots
     ├── metapath_enrichment.py          # Analyze metapath enrichment per query
     ├── aggregate_metapaths.py          # Aggregate metapath stats across queries
     ├── sort_metapaths.py               # Sort metapath results

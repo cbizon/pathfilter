@@ -29,6 +29,7 @@ uv run python -m pathfilter.cli --output all_filter_results.tsv
 echo -e "\nStep 6: Generating filter visualizations..."
 uv run python scripts/visualize_results.py --results all_filter_results.tsv --output filter_enrichment_by_query.png
 uv run python scripts/best_filters_table.py --results all_filter_results.tsv --output best_filters_table.tsv
+uv run python scripts/plot_precision_recall.py --results all_filter_results.tsv --output precision_recall.png --pareto-output pareto_optimal_points.tsv
 
 # STEP 7: Run metapath analysis
 echo -e "\nStep 7: Running metapath analysis..."
