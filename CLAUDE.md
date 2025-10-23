@@ -64,6 +64,7 @@ pathfilter/
 │   ├── normalize_input_data.py    # Pre-normalize CURIEs (includes ODF parsing)
 │   ├── visualize_results.py       # Create enrichment bar charts per query
 │   ├── best_filters_table.py      # Generate table of best filters by query
+│   ├── plot_precision_recall.py   # Create Pareto front precision-recall plots
 │   ├── analyze_node_path_counts.py # Analyze node path counts and hit paths per query
 │   ├── plot_path_count_vs_hit_fraction.py # Scatter plots of path count vs hit fraction
 │   ├── calculate_node_degrees.py  # Calculate node degrees and information content from KGX
@@ -165,6 +166,24 @@ Generates PNG visualization using **frontier filtering** to reduce clutter:
 uv run python scripts/best_filters_table.py --results all_filter_results.tsv --output best_filters.tsv
 ```
 Creates a TSV table sorted by enrichment showing the best filter for each query (favoring simpler filters in ties).
+
+**Create precision-recall Pareto front plots:**
+```bash
+uv run python scripts/plot_precision_recall.py --results all_filter_results.tsv --output precision_recall.png --pareto-output pareto_optimal_points.tsv
+```
+Generates visualization and table of Pareto optimal filter combinations:
+- **PNG output**: One subplot per query showing precision vs recall scatter plot
+  - Blue dots: Dominated filter combinations
+  - Red stars: Pareto optimal (non-dominated) filters
+  - Legend on right: Lists filtered Pareto points with precision/recall values
+  - Subplot titles include query ID and descriptive name (e.g., "PFTQ-10: imatinib → asthma")
+- **TSV output**: Table of Pareto optimal points with columns: `Query | rule | precision | recall`
+  - Automatically filters out (0, 0) points
+  - Removes redundant filter combinations (only keeps simplest filters when multiple have same precision/recall)
+  - Example: If "no_dupe_types, no_expression" and "no_dupe_types, no_expression, no_related_to" have identical values, only the simpler one is kept
+  - Sorted by query, then precision (descending)
+
+**Pareto optimality**: A filter combination is Pareto optimal if no other combination achieves both higher precision AND higher recall. These represent the best tradeoff choices between the two metrics.
 
 ## Key Implementation Details
 
