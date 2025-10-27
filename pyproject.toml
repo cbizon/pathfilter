@@ -5,6 +5,7 @@ description = "Path filtering and evaluation for Pathfinder queries"
 requires-python = ">=3.12"
 dependencies = [
     "bmt>=1.4.6",
+    "jupyter>=1.1.1",
     "matplotlib>=3.9.0",
     "odfpy>=1.4.1",
     "openpyxl>=3.1.5",
