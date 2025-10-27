@@ -1,251 +1,311 @@
-# Metapath Generation Scripts
+# Metapath Analysis Scripts
 
 ## Overview
 
-These scripts generate N-hop metapaths from the ROBOKOP knowledge graph by iteratively joining 1-hop connections.
+These scripts use **GraphBLAS sparse matrix multiplication** to compute all possible N-hop metapaths in the ROBOKOP knowledge graph and analyze their relationships with 1-hop edges.
+
+## Key Approach: Matrix Multiplication
+
+Instead of iteratively joining paths (which requires huge disk space), we represent the graph as sparse boolean matrices where each `(source_type, predicate, target_type)` triple gets its own matrix. Then:
+
+- **1-hop paths**: Direct matrix entries
+- **2-hop paths**: `A @ B` (matrix multiplication)
+- **3-hop paths**: `(A @ B) @ C`
+- **N-hop paths**: Continue multiplying
+
+This approach keeps memory constant (~2GB) by using sparse matrices and never materializing full path lists.
 
 ## Scripts
 
-### 1. `extract_1hop_metapaths.py`
-Extracts all 1-hop metapaths from ROBOKOP edges.jsonl.
+### 1. `analyze_3hop_overlap.py` (Main Script)
+
+Computes all 3-hop metapaths via triple matrix multiplication and calculates overlap with 1-hop edges.
+
+**What it does:**
+1. Loads KGX nodes and edges files
+2. Builds sparse boolean matrices for each `(source_type, predicate, target_type)` triple
+3. Creates forward (F) and reverse (R) versions for non-symmetric predicates
+4. Computes all valid 3-hop combinations: `(Matrix1 @ Matrix2) @ Matrix3`
+5. For each 3-hop result, compares with all matching 1-hop matrices to find overlap
+6. Outputs TSV with columns: `3hop_metapath | 3hop_count | 1hop_metapath | 1hop_count | overlap | total_possible`
+
+**Usage:**
+```bash
+uv run python scripts/metapaths/analyze_3hop_overlap.py \
+    --edges ../SimplePredictions/input_graphs/robokop_base_nonredundant/edges.jsonl \
+    --nodes ../SimplePredictions/input_graphs/robokop_base_nonredundant/nodes.jsonl \
+    --output 3hop_1hop_overlap.tsv
+```
 
 **Output format:**
 ```
-node_A    node_B    metapath    count
+3hop_metapath                                                          3hop_count  1hop_metapath                      1hop_count  overlap  total_possible
+SmallMolecule|affects|F|Gene|affects|R|SmallMolecule|affects|F|Gene   6173251587  SmallMolecule|affects|R|Gene       529197      5914     201487065416
+SmallMolecule|affects|F|Gene|affects|R|SmallMolecule|affects|F|Gene   6173251587  SmallMolecule|related_to|F|Gene    687086      192170   201487065416
+SmallMolecule|affects|F|Gene|affects|R|SmallMolecule|affects|F|Gene   6173251587  SmallMolecule|ANY|A|Gene           2946957     1808775  201487065416
 ```
+
+**Metapath format:** `NodeType|predicate|direction|NodeType|predicate|direction|...`
+- Pipe-separated
+- `F` = forward (follow edge as-is)
+- `R` = reverse (follow edge backwards)
+- `ANY|A` = aggregated across all predicates and directions
+
+**Performance:**
+- Memory: ~2GB (constant, thanks to sparse matrices)
+- Time: ~8-12 hours for full ROBOKOP 3-hop analysis
+- Output: ~370 rows for typical graphs (26 unique 3-hop patterns × ~15 1-hop comparisons each)
+
+### 2. `estimate_total_runtime.py`
+
+Estimates total runtime by computing the size distribution of all Matrix3 iterations without actually running them.
+
+**Strategy:**
+1. For each valid Matrix1/Matrix2 combo, compute `A @ B` (fast)
+2. Count how many Matrix3 iterations will use each `A @ B` result
+3. Bucket by result size
+4. Use benchmark timing data to estimate total runtime
 
 **Usage:**
 ```bash
-uv run python scripts/metapaths/extract_1hop_metapaths.py \
+uv run python scripts/metapaths/estimate_total_runtime.py \
     --edges ../SimplePredictions/input_graphs/robokop_base_nonredundant/edges.jsonl \
     --nodes ../SimplePredictions/input_graphs/robokop_base_nonredundant/nodes.jsonl \
-    --output 1hop_metapaths.tsv \
-    --exclude-predicates biolink:subclass_of
+    --benchmark matrix_timing_benchmark.tsv
 ```
 
-### 2. `extend_metapaths.py` (ORIGINAL - Memory-intensive)
-Extends N-hop metapaths to (N+1)-hop by joining with 1-hop paths.
+### 3. `generate_benchmark_samples.py`
 
-**Memory usage:** O(N-hop size + output size) - **NOT RECOMMENDED for N > 2**
+Creates stratified samples of matrix multiplication operations for benchmarking.
 
-**Problems:**
-- Loads entire N-hop file into memory
-- Accumulates all output in Counter before writing
-- Memory explodes for 3+ hops (can exceed 100GB)
-
-**When to use:**
-- Small datasets only
-- 1-hop → 2-hop conversion where you have plenty of RAM
-
-### 3. `extend_metapaths_chunked.py` (RECOMMENDED)
-Chunked processing with incremental aggregation.
-
-**Memory usage:** O(1-hop index) - typically **~500MB-2GB regardless of N**
-
-**Disk space:** O(chunk_size × avg_joins) - **manageable** (default: ~30GB per chunk)
-
-**How it works:**
-1. Loads 1-hop index into memory (only data structure kept in RAM)
-2. Processes N-hop file in chunks (default: 500K rows)
-3. For each chunk:
-   - Generates joins to temp file (~30GB)
-   - Aggregates with DuckDB (reduces to ~5-10GB)
-   - Deletes temp file, keeps aggregated result
-4. Merges all aggregated chunks at the end
-
-**Advantages:**
-- ✅ Uses ~100x less memory than original
-- ✅ Uses ~10-20x less disk space than streaming version
-- ✅ Handles arbitrarily large N-hop files
-- ✅ Progress visible per chunk
+**What it does:**
+- Samples Matrix2 and Matrix3 operations across different size ranges
+- Creates a representative set of operations to benchmark
+- Outputs TSV with sampled operations and their characteristics
 
 **Usage:**
-
 ```bash
-# Default chunk size (500K rows) - recommended
-uv run python scripts/metapaths/extend_metapaths_chunked.py \
-    --nhop 1hop_metapaths.tsv \
-    --onehop 1hop_metapaths.tsv \
-    --output 2hop_metapaths.tsv
-
-# Smaller chunks (uses less disk space, slightly slower)
-uv run python scripts/metapaths/extend_metapaths_chunked.py \
-    --nhop 1hop_metapaths.tsv \
-    --onehop 1hop_metapaths.tsv \
-    --output 2hop_metapaths.tsv \
-    --chunk-size 250000
-
-# Keep intermediate files for debugging
-uv run python scripts/metapaths/extend_metapaths_chunked.py \
-    --nhop 1hop_metapaths.tsv \
-    --onehop 1hop_metapaths.tsv \
-    --output 2hop_metapaths.tsv \
-    --keep-intermediates
-```
-
-### 4. `extend_metapaths_streaming.py` (Alternative - simpler but needs more disk)
-Streaming version that uses disk-based operations.
-
-**Memory usage:** O(1-hop index) - typically **~500MB-2GB regardless of N**
-
-**Disk space:** O(total_joins) - **can be huge** (960GB for 1→2 hop on ROBOKOP!)
-
-**Problem:** Writes ALL joins to a single temp file before aggregating, which can fill disk on large graphs.
-
-**When to use:**
-- Small to medium graphs where total joins < 100M
-- When you have plenty of disk space (500GB+)
-- For debugging/comparing results
-
-**Not recommended for ROBOKOP 1-hop → 2-hop** (generates 6.4B joins = 960GB temp file)
-
-## Complete Workflow (RECOMMENDED)
-
-### Generating 3-hop metapaths using chunked processing
-
-```bash
-# Step 1: Extract 1-hop metapaths (~10M entries, ~500MB RAM)
-uv run python scripts/metapaths/extract_1hop_metapaths.py \
+uv run python scripts/metapaths/generate_benchmark_samples.py \
     --edges ../SimplePredictions/input_graphs/robokop_base_nonredundant/edges.jsonl \
     --nodes ../SimplePredictions/input_graphs/robokop_base_nonredundant/nodes.jsonl \
-    --output 1hop_metapaths.tsv
-
-# Step 2: Generate 2-hop metapaths (~1B entries, ~500MB RAM, ~30GB disk per chunk)
-uv run python scripts/metapaths/extend_metapaths_chunked.py \
-    --nhop 1hop_metapaths.tsv \
-    --onehop 1hop_metapaths.tsv \
-    --output 2hop_metapaths.tsv \
-    --chunk-size 500000
-
-# Step 3: Generate 3-hop metapaths (~10B+ entries, still ~500MB RAM!)
-uv run python scripts/metapaths/extend_metapaths_chunked.py \
-    --nhop 2hop_metapaths.tsv \
-    --onehop 1hop_metapaths.tsv \
-    --output 3hop_metapaths.tsv \
-    --chunk-size 500000
+    --output benchmark_samples.tsv
 ```
 
-## Performance Comparison
+### 4. `run_benchmark_samples.py`
 
-### 1-hop → 2-hop (ROBOKOP scale: 16.7M input → 6.4B joins)
+Runs actual matrix multiplication operations from benchmark samples and records timing.
 
-| Script | Memory | Disk Space | Time | Status |
-|--------|--------|------------|------|--------|
-| `extend_metapaths.py` | **50-200GB** 💀 | 0 GB | 30 min | OOM crash |
-| `extend_metapaths_streaming.py` | **500 MB** ✅ | **960 GB** 💀 | 60 min | Disk full crash |
-| `extend_metapaths_chunked.py` | **500 MB** ✅ | **~100 GB** ✅ | 90 min | **Works!** |
-
-### 2-hop → 3-hop (estimated)
-
-| Script | Memory | Disk Space | Time | Status |
-|--------|--------|------------|------|--------|
-| `extend_metapaths.py` | **200GB+** 💀 | 0 GB | N/A | OOM crash |
-| `extend_metapaths_streaming.py` | **500 MB** ✅ | **5+ TB** 💀 | N/A | Disk full crash |
-| `extend_metapaths_chunked.py` | **500 MB** ✅ | **~500 GB** ✅ | 8-12 hrs | **Works!** |
-
-## Disk Space Requirements
-
-### Chunked processing (recommended)
-
-Per-chunk temp files (automatically deleted after aggregation):
-- **1-hop → 2-hop:** ~30GB per chunk, ~34 chunks = ~100GB total intermediate files
-- **2-hop → 3-hop:** ~50GB per chunk = ~500GB total intermediate files
-- **3-hop → 4-hop:** ~100GB per chunk = ~1TB+ total intermediate files
-
-Set temp directory with large disk space:
+**Usage:**
 ```bash
-export TMPDIR=/path/to/large/disk
-uv run python scripts/metapaths/extend_metapaths_chunked.py ...
+uv run python scripts/metapaths/run_benchmark_samples.py \
+    --edges ../SimplePredictions/input_graphs/robokop_base_nonredundant/edges.jsonl \
+    --nodes ../SimplePredictions/input_graphs/robokop_base_nonredundant/nodes.jsonl \
+    --samples benchmark_samples.tsv \
+    --output matrix_timing_benchmark.tsv
 ```
 
-### Streaming processing (not recommended for large graphs)
+### 5. `analyze_3hop_prediction.py`
 
-Single monolithic temp file (960GB for ROBOKOP 1→2 hop):
-- **1-hop → 2-hop:** ~960GB temp file (6.4B joins)
-- **2-hop → 3-hop:** ~5TB+ temp file
-- **3-hop → 4-hop:** ~50TB+ temp file (impractical)
+Analyzes how well 3-hop metapaths predict 1-hop edges using classification metrics.
 
-## DuckDB Setup (Recommended)
+**What it does:**
+1. Reads `3hop_1hop_overlap.tsv` from `analyze_3hop_overlap.py`
+2. Treats each 3-hop metapath as a binary predictor of 1-hop edges
+3. Calculates precision, recall, F1, MCC, etc. for each (3-hop, 1-hop) pair
+4. Outputs detailed metrics and summary statistics
 
-For faster aggregation, install DuckDB:
+**Usage:**
+```bash
+uv run python scripts/metapaths/analyze_3hop_prediction.py
+```
+
+**Input:** Requires `3hop_1hop_overlap.tsv` in project root
+
+**Output:**
+- `metapath_prediction_metrics.tsv` - Detailed metrics for all pairs
+- `metapath_prediction_by_3hop.tsv` - Aggregated by 3-hop metapath
+- Console output with summary statistics and top predictions
+
+### 6. `analyze_3hop_prediction.ipynb`
+
+Interactive Jupyter notebook for exploring 3-hop prediction metrics with visualizations.
+
+**Features:**
+- Filter predictions by start/end node types (e.g., SmallMolecule → Disease)
+- Display sorted by precision, recall, or F1
+- Precision-recall scatter plots (log and linear scale)
+- Pareto frontier analysis (optimal precision-recall tradeoffs)
+- Summary statistics by prediction type
+
+**Usage:**
+```bash
+jupyter notebook scripts/metapaths/analyze_3hop_prediction.ipynb
+```
+
+### 7. `type_utils.py`
+
+Utility functions for handling Biolink node types.
+
+**Key function:**
+- `get_most_specific_type(categories)` - Returns the most specific Biolink type from a list
+
+## Complete Workflow
+
+### Generate 3-hop overlap analysis:
 
 ```bash
-uv add duckdb
+# Step 1: Compute all 3-hop metapaths and their overlap with 1-hop edges
+uv run python scripts/metapaths/analyze_3hop_overlap.py \
+    --edges ../SimplePredictions/input_graphs/robokop_base_nonredundant/edges.jsonl \
+    --nodes ../SimplePredictions/input_graphs/robokop_base_nonredundant/nodes.jsonl \
+    --output 3hop_1hop_overlap.tsv
+
+# Step 2: Analyze 3-hop as predictors of 1-hop
+uv run python scripts/metapaths/analyze_3hop_prediction.py
+
+# Step 3: Explore interactively (optional)
+jupyter notebook scripts/metapaths/analyze_3hop_prediction.ipynb
 ```
 
-DuckDB is 2-3x faster than sort/uniq and uses cleaner SQL-based aggregation.
+### Benchmark and estimate runtime (optional):
 
-## Algorithm Details
+```bash
+# Step 1: Generate benchmark samples
+uv run python scripts/metapaths/generate_benchmark_samples.py \
+    --edges ../SimplePredictions/input_graphs/robokop_base_nonredundant/edges.jsonl \
+    --nodes ../SimplePredictions/input_graphs/robokop_base_nonredundant/nodes.jsonl \
+    --output benchmark_samples.tsv
 
-### Original Algorithm (extend_metapaths.py)
-```
-1. Load 1-hop index: node_A -> [(node_B, metapath), ...]
-2. Load ALL N-hop paths into list ← MEMORY PROBLEM
-3. For each N-hop path:
-     For each matching 1-hop continuation:
-       Accumulate in Counter ← MEMORY PROBLEM
-4. Write Counter to file
-```
+# Step 2: Run benchmarks
+uv run python scripts/metapaths/run_benchmark_samples.py \
+    --edges ../SimplePredictions/input_graphs/robokop_base_nonredundant/edges.jsonl \
+    --nodes ../SimplePredictions/input_graphs/robokop_base_nonredundant/nodes.jsonl \
+    --samples benchmark_samples.tsv \
+    --output matrix_timing_benchmark.tsv
 
-**Problems:** Both input and output in memory = 200GB+ for large graphs
-
-### Streaming Algorithm (extend_metapaths_streaming.py)
-```
-1. Load 1-hop index: node_A -> [(node_B, metapath), ...]
-2. Stream N-hop file line by line ← NO LOADING
-3. For each N-hop path:
-     For each matching 1-hop continuation:
-       Write immediately to temp file ← NO ACCUMULATION
-4. Sort temp file on disk (uses external merge sort)
-5. Count duplicates and write final output
+# Step 3: Estimate total runtime before running full analysis
+uv run python scripts/metapaths/estimate_total_runtime.py \
+    --edges ../SimplePredictions/input_graphs/robokop_base_nonredundant/edges.jsonl \
+    --nodes ../SimplePredictions/input_graphs/robokop_base_nonredundant/nodes.jsonl \
+    --benchmark matrix_timing_benchmark.tsv
 ```
 
-**Problems:** Single 960GB temp file fills disk
+## Key Concepts
 
-### Chunked Algorithm (extend_metapaths_chunked.py) - RECOMMENDED
+### Metapath Format
+
+Metapaths are pipe-separated strings encoding the path through the knowledge graph:
+
 ```
-1. Load 1-hop index: node_A -> [(node_B, metapath), ...]
-2. For each chunk of N-hop file (e.g., 500K rows):
-     a. Generate joins to temp file (~30GB)
-     b. Aggregate temp file with DuckDB (reduces to ~5GB)
-     c. Save aggregated chunk, delete temp
-3. Merge all aggregated chunks with DuckDB
+NodeType|predicate|direction|NodeType|predicate|direction|NodeType|predicate|direction|NodeType
 ```
 
-**Key insights:**
-- Never materialize the full input or output in memory
-- Never materialize the full unaggregated joins on disk
-- Process in bounded chunks, aggregate incrementally
+**Example:** `SmallMolecule|affects|F|Gene|affects|R|SmallMolecule|treats|R|Disease`
+
+- Start: `SmallMolecule`
+- Edge 1: `affects` (Forward) → `Gene`
+- Edge 2: `affects` (Reverse) ← `SmallMolecule`
+- Edge 3: `treats` (Reverse) ← `Disease`
+
+### Symmetric Predicates
+
+Some predicates are symmetric (A→B implies B→A), so we don't create reverse versions:
+- `interacts_with`
+- `correlated_with`
+- `associated_with`
+- `similar_to`
+- `related_to`
+- etc.
+
+### Aggregated (ANY) Metapaths
+
+For each 3-hop pattern, we also compute overlap with "ANY" 1-hop - the union of all 1-hop edges between the same start/end types, regardless of predicate or direction.
+
+Format: `StartType|ANY|A|EndType`
+
+Example: `SmallMolecule|ANY|A|Gene` represents any connection from SmallMolecule to Gene.
+
+## Performance Characteristics
+
+### Memory Usage
+
+**Constant ~2GB** regardless of graph size, thanks to:
+- Sparse boolean matrices (only store edges, not empty cells)
+- No materialization of full path lists
+- Streaming processing of matrix operations
+
+### Disk Usage
+
+**Minimal** - only output files:
+- `3hop_1hop_overlap.tsv`: ~50KB-5MB depending on graph
+- `metapath_prediction_metrics.tsv`: ~200KB-10MB
+
+No large intermediate files needed!
+
+### Runtime
+
+For full ROBOKOP graph (~20M nodes, ~180M edges):
+- **1-hop matrix construction**: ~5 minutes
+- **3-hop computation**: ~8-12 hours
+- **Prediction analysis**: ~1 minute
+
+Runtime scales with:
+- Number of edge type triples
+- Number of valid 3-hop combinations
+- Density of resulting matrices
 
 ## Troubleshooting
 
 ### "Out of memory" error
-- Use `extend_metapaths_chunked.py` instead of `extend_metapaths.py`
-- Reduce `--chunk-size` (e.g., from 500K to 250K)
+- Should not happen with GraphBLAS sparse matrices
+- If it does, reduce graph size or increase system RAM
 
-### "No space left on device"
-- **Chunked version:** Needs ~30-50GB per chunk (default 500K rows)
-  - Reduce `--chunk-size` to use less disk space (slower, but works)
-  - Set `TMPDIR` to location with more space:
-    ```bash
-    export TMPDIR=/path/to/large/disk
-    uv run python scripts/metapaths/extend_metapaths_chunked.py ...
-    ```
+### Process seems slow
+- 3-hop analysis takes hours - this is expected
+- Monitor progress messages (prints every Matrix2/Matrix3 iteration)
+- Check memory usage stays constant (~2GB)
 
-- **Streaming version:** Needs 960GB+ for ROBOKOP 1→2 hop
-  - Switch to chunked version instead
-
-### DuckDB import error
+### Missing dependencies
 ```bash
-uv add duckdb
+# Install GraphBLAS (required)
+uv add python-graphblas
+
+# Install Jupyter (for notebooks)
+uv add jupyter
 ```
 
-### Process seems stuck / no progress updates
-- Each chunk takes time to process (10-30 min per 500K rows for 1→2 hop)
-- Progress is printed per chunk and every 100K input rows
-- Monitor disk usage to verify temp files are being created/deleted
+## Technical Details
 
-### Want to resume after crash
-- Currently no resume capability - must restart from beginning
-- Use `--keep-intermediates` to save chunks before crash, then manually merge
-- Future enhancement: add checkpoint/resume functionality
+### Why GraphBLAS?
+
+Traditional path enumeration approaches require storing and joining huge lists of paths:
+- 1-hop: ~10M paths
+- 2-hop: ~1B paths (100GB+ disk space)
+- 3-hop: ~100B paths (10TB+ disk space)
+
+GraphBLAS sparse matrices:
+- Never materialize full path lists
+- Only track existence of connections (boolean)
+- Use optimized C libraries for sparse operations
+- Memory usage: O(edges) not O(paths)
+
+### Algorithm Complexity
+
+For 3-hop computation:
+- **Time**: O(M1 × M2 × M3) where M = number of edge type triples
+- **Space**: O(edges in graph) - sparse matrix storage
+- **Output**: O(3-hop patterns × 1-hop patterns) - typically ~300-500 rows
+
+Compared to naive enumeration:
+- **Time**: Similar (still need to multiply)
+- **Space**: 1000x less (no materialization)
+- **Scalability**: Can handle graphs with billions of paths
+
+## Future Extensions
+
+Potential enhancements:
+1. **4-hop and beyond**: Extend to N-hop with configurable depth
+2. **Selective computation**: Only compute specific start/end type combinations
+3. **Path weighting**: Use float matrices to track path scores/probabilities
+4. **Distributed computation**: Parallelize across multiple machines
+5. **Incremental updates**: Efficiently update when graph changes

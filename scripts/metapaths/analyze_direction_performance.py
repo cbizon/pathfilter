@@ -21,6 +21,9 @@ This script:
 
 import argparse
 import json
+import time
+import os
+import psutil
 from collections import defaultdict
 import graphblas as gb
 from type_utils import get_most_specific_type
@@ -37,6 +40,27 @@ SYMMETRIC_PREDICATES = {
     'biolink:paralogous_to',
     'biolink:xenologous_to',
 }
+
+
+def get_memory_mb():
+    """Get current process memory usage in MB (including C libraries like GraphBLAS)."""
+    import subprocess
+    pid = os.getpid()
+
+    # Use ps command to get actual RSS (includes C library allocations)
+    try:
+        # macOS ps: rss is in KB
+        result = subprocess.run(['ps', '-o', 'rss=', '-p', str(pid)],
+                              capture_output=True, text=True, timeout=1)
+        if result.returncode == 0:
+            rss_kb = int(result.stdout.strip())
+            return rss_kb / 1024  # Convert KB to MB
+    except:
+        pass
+
+    # Fallback: use psutil
+    process = psutil.Process(pid)
+    return process.memory_info().rss / 1024 / 1024
 
 
 def load_node_types(nodes_file: str) -> dict:
@@ -124,26 +148,26 @@ def build_matrices(edges_file: str, node_types: dict):
     return matrices
 
 
-def estimate_matrix_memory_bytes(matrix):
+def get_matrix_memory_mb(matrix):
     """
-    Estimate memory usage of a GraphBLAS sparse matrix in bytes.
+    Estimate memory usage of a GraphBLAS sparse matrix in MB.
 
-    For BOOL dtype sparse matrix:
-    - Each entry needs: row index (8 bytes) + col index (8 bytes) + value (1 byte)
-    - Plus overhead for sparse structure (~17 bytes per entry total)
+    For BOOL dtype sparse matrix: ~17 bytes per entry
     """
-    return matrix.nvals * 17  # Conservative estimate
+    return (matrix.nvals * 17) / (1024 * 1024)
 
 
 def analyze_direction_performance(matrices, max_samples=1000):
     """
-    Compare performance characteristics of forward vs reverse direction.
+    Compare ACTUAL runtime and memory usage for forward vs reverse direction.
 
-    Samples valid 3-hop paths and computes intermediate matrix sizes for both directions.
-    Tracks both number of edges and memory footprint.
+    For each sampled 3-hop path:
+    - Forward: times (M1 @ M2) and (result @ M3), measures memory at each step
+    - Reverse: times (M3^T @ M2^T) and (result @ M1^T), measures memory at each step
+    - Records real performance data, not estimates
     """
     print(f"\n{'=' * 80}", flush=True)
-    print("ANALYZING FORWARD VS REVERSE PERFORMANCE", flush=True)
+    print("ANALYZING FORWARD VS REVERSE PERFORMANCE (REAL TIMING)", flush=True)
     print(f"{'=' * 80}", flush=True)
 
     # Build extended matrix list with inverses
@@ -170,17 +194,28 @@ def analyze_direction_performance(matrices, max_samples=1000):
     reverse_faster = 0
     equal = 0
 
-    forward_smaller_intermediate = 0
-    reverse_smaller_intermediate = 0
+    # Track timing statistics
+    forward_time_list = []
+    reverse_time_list = []
+    forward_step1_time_list = []
+    forward_step2_time_list = []
+    reverse_step1_time_list = []
+    reverse_step2_time_list = []
 
     # Track memory statistics
-    forward_memory_list = []
-    reverse_memory_list = []
+    forward_mem_list = []
+    reverse_mem_list = []
 
     with open('direction_analysis.tsv', 'w') as f:
-        f.write("forward_metapath\tforward_intermediate_edges\tforward_memory_mb\t"
-                "reverse_metapath\treverse_intermediate_edges\treverse_memory_mb\t"
-                "better_direction\tmemory_ratio\n")
+        f.write("forward_metapath\t"
+                "forward_step1_time\tforward_step1_edges\tforward_step1_mem_mb\t"
+                "forward_step2_time\tforward_result_edges\tforward_step2_mem_mb\t"
+                "forward_total_time\t"
+                "reverse_metapath\t"
+                "reverse_step1_time\treverse_step1_edges\treverse_step1_mem_mb\t"
+                "reverse_step2_time\treverse_result_edges\treverse_step2_mem_mb\t"
+                "reverse_total_time\t"
+                "better_direction\ttime_ratio\n")
 
         for idx1, (src_type1, pred1, tgt_type1, matrix1, dir1) in enumerate(all_matrices):
             if samples_checked >= max_samples:
@@ -204,37 +239,93 @@ def analyze_direction_performance(matrices, max_samples=1000):
                     if matrix1.ncols != matrix2.nrows or matrix2.ncols != matrix3.nrows:
                         continue
 
-                    # FORWARD: (A @ B) @ C
-                    # Compute intermediate A @ B
-                    forward_intermediate = matrix1.mxm(matrix2, gb.semiring.any_pair).new()
-                    forward_intermediate_size = forward_intermediate.nvals
-                    forward_memory_bytes = estimate_matrix_memory_bytes(forward_intermediate)
-                    forward_memory_mb = forward_memory_bytes / (1024 * 1024)
+                    # ===================================================================
+                    # FORWARD DIRECTION: (M1 @ M2) @ M3
+                    # ===================================================================
 
-                    # REVERSE: (C^T @ B^T) @ A^T
-                    # Compute intermediate C^T @ B^T
+                    mem_before_forward = get_memory_mb()
+
+                    # Step 1: M1 @ M2
+                    start_time = time.time()
+                    forward_intermediate = matrix1.mxm(matrix2, gb.semiring.any_pair).new()
+                    forward_step1_time = time.time() - start_time
+                    forward_step1_edges = forward_intermediate.nvals
+                    forward_step1_mem = get_matrix_memory_mb(forward_intermediate)
+                    mem_after_step1 = get_memory_mb()
+
+                    # Skip if intermediate is empty
+                    if forward_step1_edges == 0:
+                        continue
+
+                    # Step 2: intermediate @ M3
+                    start_time = time.time()
+                    forward_result = forward_intermediate.mxm(matrix3, gb.semiring.any_pair).new()
+                    forward_step2_time = time.time() - start_time
+                    forward_result_edges = forward_result.nvals
+                    forward_step2_mem = get_matrix_memory_mb(forward_result)
+                    mem_after_forward = get_memory_mb()
+
+                    forward_total_time = forward_step1_time + forward_step2_time
+                    forward_peak_mem = mem_after_forward - mem_before_forward
+
+                    # ===================================================================
+                    # REVERSE DIRECTION: (M3^T @ M2^T) @ M1^T
+                    # ===================================================================
+
+                    mem_before_reverse = get_memory_mb()
+
+                    # Step 1: M3^T @ M2^T
+                    start_time = time.time()
                     reverse_intermediate = matrix3.T.mxm(matrix2.T, gb.semiring.any_pair).new()
-                    reverse_intermediate_size = reverse_intermediate.nvals
-                    reverse_memory_bytes = estimate_matrix_memory_bytes(reverse_intermediate)
-                    reverse_memory_mb = reverse_memory_bytes / (1024 * 1024)
+                    reverse_step1_time = time.time() - start_time
+                    reverse_step1_edges = reverse_intermediate.nvals
+                    reverse_step1_mem = get_matrix_memory_mb(reverse_intermediate)
+                    mem_after_step1_rev = get_memory_mb()
+
+                    # Skip if intermediate is empty
+                    if reverse_step1_edges == 0:
+                        continue
+
+                    # Step 2: intermediate @ M1^T
+                    start_time = time.time()
+                    reverse_result = reverse_intermediate.mxm(matrix1.T, gb.semiring.any_pair).new()
+                    reverse_step2_time = time.time() - start_time
+                    reverse_result_edges = reverse_result.nvals
+                    reverse_step2_mem = get_matrix_memory_mb(reverse_result)
+                    mem_after_reverse = get_memory_mb()
+
+                    reverse_total_time = reverse_step1_time + reverse_step2_time
+                    reverse_peak_mem = mem_after_reverse - mem_before_reverse
+
+                    # ===================================================================
+                    # COMPARISON
+                    # ===================================================================
+
+                    # Track timing distributions
+                    forward_time_list.append(forward_total_time)
+                    reverse_time_list.append(reverse_total_time)
+                    forward_step1_time_list.append(forward_step1_time)
+                    forward_step2_time_list.append(forward_step2_time)
+                    reverse_step1_time_list.append(reverse_step1_time)
+                    reverse_step2_time_list.append(reverse_step2_time)
 
                     # Track memory distributions
-                    forward_memory_list.append(forward_memory_mb)
-                    reverse_memory_list.append(reverse_memory_mb)
+                    forward_mem_list.append(forward_peak_mem)
+                    reverse_mem_list.append(reverse_peak_mem)
 
-                    # Calculate memory ratio (forward / reverse)
-                    if reverse_memory_mb > 0:
-                        memory_ratio = forward_memory_mb / reverse_memory_mb
+                    # Calculate time ratio (forward / reverse)
+                    if reverse_total_time > 0:
+                        time_ratio = forward_total_time / reverse_total_time
                     else:
-                        memory_ratio = float('inf') if forward_memory_mb > 0 else 1.0
+                        time_ratio = float('inf') if forward_total_time > 0 else 1.0
 
-                    # Determine which is better (smaller intermediate is usually faster)
-                    if forward_intermediate_size < reverse_intermediate_size:
+                    # Determine which is better (faster)
+                    if forward_total_time < reverse_total_time:
                         better = "forward"
-                        forward_smaller_intermediate += 1
-                    elif reverse_intermediate_size < forward_intermediate_size:
+                        forward_faster += 1
+                    elif reverse_total_time < forward_total_time:
                         better = "reverse"
-                        reverse_smaller_intermediate += 1
+                        reverse_faster += 1
                     else:
                         better = "equal"
                         equal += 1
@@ -243,23 +334,37 @@ def analyze_direction_performance(matrices, max_samples=1000):
                     forward_path = f"{src_type1}|{pred1}|{dir1}|{tgt_type1}|{pred2}|{dir2}|{tgt_type2}|{pred3}|{dir3}|{tgt_type3}"
                     reverse_path = f"{tgt_type3}|{pred3}|{'F' if dir3=='R' else 'R'}|{tgt_type2}|{pred2}|{'F' if dir2=='R' else 'R'}|{tgt_type1}|{pred1}|{'F' if dir1=='R' else 'R'}|{src_type1}"
 
-                    f.write(f"{forward_path}\t{forward_intermediate_size}\t{forward_memory_mb:.3f}\t"
-                            f"{reverse_path}\t{reverse_intermediate_size}\t{reverse_memory_mb:.3f}\t"
-                            f"{better}\t{memory_ratio:.3f}\n")
+                    # Write results
+                    f.write(f"{forward_path}\t"
+                            f"{forward_step1_time:.6f}\t{forward_step1_edges}\t{forward_step1_mem:.3f}\t"
+                            f"{forward_step2_time:.6f}\t{forward_result_edges}\t{forward_step2_mem:.3f}\t"
+                            f"{forward_total_time:.6f}\t"
+                            f"{reverse_path}\t"
+                            f"{reverse_step1_time:.6f}\t{reverse_step1_edges}\t{reverse_step1_mem:.3f}\t"
+                            f"{reverse_step2_time:.6f}\t{reverse_result_edges}\t{reverse_step2_mem:.3f}\t"
+                            f"{reverse_total_time:.6f}\t"
+                            f"{better}\t{time_ratio:.3f}\n")
 
                     samples_checked += 1
 
-                    if samples_checked % 100 == 0:
+                    if samples_checked % 10 == 0:
                         print(f"Checked {samples_checked:,} paths | "
-                              f"Forward better: {forward_smaller_intermediate} | "
-                              f"Reverse better: {reverse_smaller_intermediate} | "
-                              f"Equal: {equal}", flush=True)
+                              f"Forward faster: {forward_faster} | "
+                              f"Reverse faster: {reverse_faster} | "
+                              f"Equal: {equal} | "
+                              f"Avg speedup: {sum(reverse_time_list)/sum(forward_time_list) if forward_time_list else 1:.2f}x",
+                              flush=True)
 
-    # Calculate memory statistics
+                    if samples_checked % 100 == 0:
+                        f.flush()
+
+    # Calculate statistics
     import statistics
 
-    forward_memory_list.sort()
-    reverse_memory_list.sort()
+    forward_time_list.sort()
+    reverse_time_list.sort()
+    forward_mem_list.sort()
+    reverse_mem_list.sort()
 
     def percentile(data, p):
         """Calculate percentile p (0-100) from sorted data."""
@@ -272,55 +377,87 @@ def analyze_direction_performance(matrices, max_samples=1000):
             return data[f]
         return data[f] * (c - k) + data[c] * (k - f)
 
-    def count_fits_in_memory(data, memory_budget_mb):
-        """Count how many intermediates fit within memory budget."""
-        return sum(1 for x in data if x <= memory_budget_mb)
-
     print(f"\n{'=' * 80}", flush=True)
-    print("RESULTS: INTERMEDIATE MATRIX SIZE COMPARISON", flush=True)
+    print("RESULTS: ACTUAL PERFORMANCE COMPARISON", flush=True)
     print(f"{'=' * 80}", flush=True)
     print(f"Total paths analyzed: {samples_checked:,}")
-    print(f"Forward has smaller intermediate: {forward_smaller_intermediate} ({forward_smaller_intermediate/samples_checked*100:.1f}%)")
-    print(f"Reverse has smaller intermediate: {reverse_smaller_intermediate} ({reverse_smaller_intermediate/samples_checked*100:.1f}%)")
+    print(f"Forward faster: {forward_faster} ({forward_faster/samples_checked*100:.1f}%)")
+    print(f"Reverse faster: {reverse_faster} ({reverse_faster/samples_checked*100:.1f}%)")
     print(f"Equal: {equal} ({equal/samples_checked*100:.1f}%)")
 
+    if forward_time_list and reverse_time_list:
+        total_forward_time = sum(forward_time_list)
+        total_reverse_time = sum(reverse_time_list)
+        print(f"\nTotal time - Forward: {total_forward_time:.2f}s | Reverse: {total_reverse_time:.2f}s")
+        print(f"Average speedup (reverse vs forward): {total_forward_time/total_reverse_time:.2f}x")
+
     print(f"\n{'=' * 80}", flush=True)
-    print("MEMORY STATISTICS (MB per intermediate matrix)", flush=True)
+    print("TIMING STATISTICS (seconds per complete 3-hop path)", flush=True)
     print(f"{'=' * 80}", flush=True)
 
     print(f"\nFORWARD DIRECTION:")
-    print(f"  Min:     {min(forward_memory_list):.2f} MB")
-    print(f"  p25:     {percentile(forward_memory_list, 25):.2f} MB")
-    print(f"  Median:  {percentile(forward_memory_list, 50):.2f} MB")
-    print(f"  Mean:    {statistics.mean(forward_memory_list):.2f} MB")
-    print(f"  p75:     {percentile(forward_memory_list, 75):.2f} MB")
-    print(f"  p90:     {percentile(forward_memory_list, 90):.2f} MB")
-    print(f"  p95:     {percentile(forward_memory_list, 95):.2f} MB")
-    print(f"  p99:     {percentile(forward_memory_list, 99):.2f} MB")
-    print(f"  Max:     {max(forward_memory_list):.2f} MB")
+    print(f"  Min:     {min(forward_time_list):.6f} s")
+    print(f"  p25:     {percentile(forward_time_list, 25):.6f} s")
+    print(f"  Median:  {percentile(forward_time_list, 50):.6f} s")
+    print(f"  Mean:    {statistics.mean(forward_time_list):.6f} s")
+    print(f"  p75:     {percentile(forward_time_list, 75):.6f} s")
+    print(f"  p90:     {percentile(forward_time_list, 90):.6f} s")
+    print(f"  p95:     {percentile(forward_time_list, 95):.6f} s")
+    print(f"  p99:     {percentile(forward_time_list, 99):.6f} s")
+    print(f"  Max:     {max(forward_time_list):.6f} s")
 
     print(f"\nREVERSE DIRECTION:")
-    print(f"  Min:     {min(reverse_memory_list):.2f} MB")
-    print(f"  p25:     {percentile(reverse_memory_list, 25):.2f} MB")
-    print(f"  Median:  {percentile(reverse_memory_list, 50):.2f} MB")
-    print(f"  Mean:    {statistics.mean(reverse_memory_list):.2f} MB")
-    print(f"  p75:     {percentile(reverse_memory_list, 75):.2f} MB")
-    print(f"  p90:     {percentile(reverse_memory_list, 90):.2f} MB")
-    print(f"  p95:     {percentile(reverse_memory_list, 95):.2f} MB")
-    print(f"  p99:     {percentile(reverse_memory_list, 99):.2f} MB")
-    print(f"  Max:     {max(reverse_memory_list):.2f} MB")
+    print(f"  Min:     {min(reverse_time_list):.6f} s")
+    print(f"  p25:     {percentile(reverse_time_list, 25):.6f} s")
+    print(f"  Median:  {percentile(reverse_time_list, 50):.6f} s")
+    print(f"  Mean:    {statistics.mean(reverse_time_list):.6f} s")
+    print(f"  p75:     {percentile(reverse_time_list, 75):.6f} s")
+    print(f"  p90:     {percentile(reverse_time_list, 90):.6f} s")
+    print(f"  p95:     {percentile(reverse_time_list, 95):.6f} s")
+    print(f"  p99:     {percentile(reverse_time_list, 99):.6f} s")
+    print(f"  Max:     {max(reverse_time_list):.6f} s")
 
     print(f"\n{'=' * 80}", flush=True)
-    print("PARALLELIZATION POTENTIAL", flush=True)
+    print("MEMORY STATISTICS (peak MB change during computation)", flush=True)
     print(f"{'=' * 80}", flush=True)
+
+    print(f"\nFORWARD DIRECTION:")
+    print(f"  Min:     {min(forward_mem_list):.2f} MB")
+    print(f"  p25:     {percentile(forward_mem_list, 25):.2f} MB")
+    print(f"  Median:  {percentile(forward_mem_list, 50):.2f} MB")
+    print(f"  Mean:    {statistics.mean(forward_mem_list):.2f} MB")
+    print(f"  p75:     {percentile(forward_mem_list, 75):.2f} MB")
+    print(f"  p90:     {percentile(forward_mem_list, 90):.2f} MB")
+    print(f"  p95:     {percentile(forward_mem_list, 95):.2f} MB")
+    print(f"  p99:     {percentile(forward_mem_list, 99):.2f} MB")
+    print(f"  Max:     {max(forward_mem_list):.2f} MB")
+
+    print(f"\nREVERSE DIRECTION:")
+    print(f"  Min:     {min(reverse_mem_list):.2f} MB")
+    print(f"  p25:     {percentile(reverse_mem_list, 25):.2f} MB")
+    print(f"  Median:  {percentile(reverse_mem_list, 50):.2f} MB")
+    print(f"  Mean:    {statistics.mean(reverse_mem_list):.2f} MB")
+    print(f"  p75:     {percentile(reverse_mem_list, 75):.2f} MB")
+    print(f"  p90:     {percentile(reverse_mem_list, 90):.2f} MB")
+    print(f"  p95:     {percentile(reverse_mem_list, 95):.2f} MB")
+    print(f"  p99:     {percentile(reverse_mem_list, 99):.2f} MB")
+    print(f"  Max:     {max(reverse_mem_list):.2f} MB")
+
+    print(f"\n{'=' * 80}", flush=True)
+    print("PARALLELIZATION POTENTIAL (by memory budget)", flush=True)
+    print(f"{'=' * 80}", flush=True)
+
+    def count_fits_in_memory(data, memory_budget_mb):
+        """Count how many paths fit within memory budget."""
+        return sum(1 for x in data if x <= memory_budget_mb)
 
     memory_budgets = [100, 500, 1000, 2000, 4000]
     print(f"\n{'Budget (MB)':<15} {'Forward Fits':<15} {'Reverse Fits':<15} {'Better':<10}")
     print(f"{'-'*55}")
 
     for budget in memory_budgets:
-        forward_fits = count_fits_in_memory(forward_memory_list, budget)
-        reverse_fits = count_fits_in_memory(reverse_memory_list, budget)
+        forward_fits = count_fits_in_memory(forward_mem_list, budget)
+        reverse_fits = count_fits_in_memory(reverse_mem_list, budget)
         forward_pct = forward_fits / samples_checked * 100
         reverse_pct = reverse_fits / samples_checked * 100
 
@@ -329,11 +466,39 @@ def analyze_direction_performance(matrices, max_samples=1000):
         print(f"{budget:<15} {forward_fits:>6} ({forward_pct:>5.1f}%)  "
               f"{reverse_fits:>6} ({reverse_pct:>5.1f}%)  {better:<10}")
 
-    print(f"\nInterpretation:")
-    print(f"- With {memory_budgets[1]} MB/worker: "
-          f"Forward can parallelize {count_fits_in_memory(forward_memory_list, memory_budgets[1])} paths, "
-          f"Reverse can parallelize {count_fits_in_memory(reverse_memory_list, memory_budgets[1])} paths")
-    print(f"- Higher 'fits' count = more paths can run in parallel on memory-constrained workers")
+    print(f"\n{'=' * 80}", flush=True)
+    print("KEY INSIGHTS", flush=True)
+    print(f"{'=' * 80}", flush=True)
+
+    if forward_faster > reverse_faster:
+        winner = "FORWARD"
+        win_pct = forward_faster / samples_checked * 100
+        avg_speedup = sum(reverse_time_list) / sum(forward_time_list)
+    elif reverse_faster > forward_faster:
+        winner = "REVERSE"
+        win_pct = reverse_faster / samples_checked * 100
+        avg_speedup = sum(forward_time_list) / sum(reverse_time_list)
+    else:
+        winner = "TIE"
+        win_pct = 50.0
+        avg_speedup = 1.0
+
+    print(f"\n1. WINNER: {winner} direction is faster {win_pct:.1f}% of the time")
+    print(f"   Average speedup: {avg_speedup:.2f}x faster")
+
+    print(f"\n2. MEMORY: With 1GB/worker memory budget:")
+    f1000 = count_fits_in_memory(forward_mem_list, 1000)
+    r1000 = count_fits_in_memory(reverse_mem_list, 1000)
+    print(f"   Forward can parallelize {f1000}/{samples_checked} paths ({f1000/samples_checked*100:.1f}%)")
+    print(f"   Reverse can parallelize {r1000}/{samples_checked} paths ({r1000/samples_checked*100:.1f}%)")
+
+    print(f"\n3. RECOMMENDATION:")
+    if winner == "FORWARD":
+        print(f"   Compute 3-hop paths in FORWARD direction only (cut computation ~2x)")
+    elif winner == "REVERSE":
+        print(f"   Compute 3-hop paths in REVERSE direction only (cut computation ~2x)")
+    else:
+        print(f"   Implement adaptive direction selection based on intermediate size")
 
     print(f"\n{'=' * 80}", flush=True)
     print(f"Wrote detailed results to direction_analysis.tsv")
