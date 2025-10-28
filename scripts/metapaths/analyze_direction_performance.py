@@ -190,8 +190,8 @@ def analyze_direction_performance(matrices, max_samples=1000):
     for src_type, pred, tgt_type, matrix, direction in all_matrices:
         by_source_type[src_type].append((src_type, pred, tgt_type, matrix, direction))
 
-    # Pre-enumerate all valid 3-hop combinations
-    print(f"\nEnumerating all valid 3-hop combinations...", flush=True)
+    # Pre-enumerate all valid 3-hop combinations (by type compatibility only)
+    print(f"\nEnumerating all valid 3-hop combinations (by type)...", flush=True)
     valid_combinations = []
 
     for src_type1, pred1, tgt_type1, matrix1, dir1 in all_matrices:
@@ -203,17 +203,30 @@ def analyze_direction_performance(matrices, max_samples=1000):
                 continue
 
             for src_type3, pred3, tgt_type3, matrix3, dir3 in by_source_type[tgt_type2]:
-                # Check dimension compatibility
-                if matrix1.ncols != matrix2.nrows or matrix2.ncols != matrix3.nrows:
-                    continue
-
+                # Only check type compatibility, not dimensions (that's checked during processing)
                 valid_combinations.append((
                     (src_type1, pred1, tgt_type1, matrix1, dir1),
                     (src_type2, pred2, tgt_type2, matrix2, dir2),
                     (src_type3, pred3, tgt_type3, matrix3, dir3)
                 ))
 
-    print(f"Found {len(valid_combinations):,} valid 3-hop combinations", flush=True)
+    print(f"Found {len(valid_combinations):,} valid 3-hop combinations (by type)", flush=True)
+
+    # Count amortization opportunities for both directions
+    print(f"Counting amortization opportunities...", flush=True)
+    m1m2_to_m3_count = defaultdict(int)  # Forward: how many M3 per (M1, M2)
+    m2m3_to_m1_count = defaultdict(int)  # Reverse: how many M1 per (M2, M3)
+
+    for (src_type1, pred1, tgt_type1, matrix1, dir1), \
+        (src_type2, pred2, tgt_type2, matrix2, dir2), \
+        (src_type3, pred3, tgt_type3, matrix3, dir3) in valid_combinations:
+        m1m2_key = (id(matrix1), id(matrix2))
+        m2m3_key = (id(matrix2), id(matrix3))
+        m1m2_to_m3_count[m1m2_key] += 1
+        m2m3_to_m1_count[m2m3_key] += 1
+
+    print(f"Found {len(m1m2_to_m3_count):,} unique (M1, M2) pairs", flush=True)
+    print(f"Found {len(m2m3_to_m1_count):,} unique (M2, M3) pairs", flush=True)
 
     # Randomly sample from valid combinations
     num_samples = min(max_samples, len(valid_combinations))
@@ -240,14 +253,18 @@ def analyze_direction_performance(matrices, max_samples=1000):
 
     with open('direction_analysis.tsv', 'w') as f:
         f.write("forward_metapath\t"
+                "m1_nrows\tm1_ncols\tm1_nvals\t"
+                "m2_nrows\tm2_ncols\tm2_nvals\t"
+                "m3_nrows\tm3_ncols\tm3_nvals\t"
+                "forward_amortize_count\treverse_amortize_count\t"
                 "forward_step1_time\tforward_step1_edges\tforward_step1_mem_mb\t"
                 "forward_step2_time\tforward_result_edges\tforward_step2_mem_mb\t"
-                "forward_total_time\t"
+                "forward_total_time\tforward_amortized_time\t"
                 "reverse_metapath\t"
                 "reverse_step1_time\treverse_step1_edges\treverse_step1_mem_mb\t"
                 "reverse_step2_time\treverse_result_edges\treverse_step2_mem_mb\t"
-                "reverse_total_time\t"
-                "better_direction\ttime_ratio\n")
+                "reverse_total_time\treverse_amortized_time\t"
+                "better_direction\ttime_ratio\tamortized_better\tamortized_ratio\n")
 
         for (src_type1, pred1, tgt_type1, matrix1, dir1), \
             (src_type2, pred2, tgt_type2, matrix2, dir2), \
@@ -267,11 +284,7 @@ def analyze_direction_performance(matrices, max_samples=1000):
             forward_step1_mem = get_matrix_memory_mb(forward_intermediate)
             mem_after_step1 = get_memory_mb()
 
-            # Skip if intermediate is empty
-            if forward_step1_edges == 0:
-                continue
-
-            # Step 2: intermediate @ M3
+            # Step 2: intermediate @ M3 (do this even if intermediate is empty - it still takes time!)
             start_time = time.time()
             forward_result = forward_intermediate.mxm(matrix3, gb.semiring.any_pair).new()
             forward_step2_time = time.time() - start_time
@@ -296,11 +309,7 @@ def analyze_direction_performance(matrices, max_samples=1000):
             reverse_step1_mem = get_matrix_memory_mb(reverse_intermediate)
             mem_after_step1_rev = get_memory_mb()
 
-            # Skip if intermediate is empty
-            if reverse_step1_edges == 0:
-                continue
-
-            # Step 2: intermediate @ M1^T
+            # Step 2: intermediate @ M1^T (do this even if intermediate is empty - it still takes time!)
             start_time = time.time()
             reverse_result = reverse_intermediate.mxm(matrix1.T, gb.semiring.any_pair).new()
             reverse_step2_time = time.time() - start_time
@@ -344,20 +353,44 @@ def analyze_direction_performance(matrices, max_samples=1000):
                 better = "equal"
                 equal += 1
 
+            # Calculate amortization counts
+            m1m2_key = (id(matrix1), id(matrix2))
+            m2m3_key = (id(matrix2), id(matrix3))
+            forward_amortize = m1m2_to_m3_count[m1m2_key]
+            reverse_amortize = m2m3_to_m1_count[m2m3_key]
+
+            # Calculate amortized times
+            forward_amortized_time = (forward_step1_time / forward_amortize) + forward_step2_time
+            reverse_amortized_time = (reverse_step1_time / reverse_amortize) + reverse_step2_time
+
+            # Determine better direction with amortization
+            if forward_amortized_time < reverse_amortized_time:
+                amortized_better = "forward"
+            elif reverse_amortized_time < forward_amortized_time:
+                amortized_better = "reverse"
+            else:
+                amortized_better = "equal"
+
+            amortized_ratio = forward_amortized_time / reverse_amortized_time if reverse_amortized_time > 0 else float('inf')
+
             # Format metapaths
             forward_path = f"{src_type1}|{pred1}|{dir1}|{tgt_type1}|{pred2}|{dir2}|{tgt_type2}|{pred3}|{dir3}|{tgt_type3}"
             reverse_path = f"{tgt_type3}|{pred3}|{'F' if dir3=='R' else 'R'}|{tgt_type2}|{pred2}|{'F' if dir2=='R' else 'R'}|{tgt_type1}|{pred1}|{'F' if dir1=='R' else 'R'}|{src_type1}"
 
             # Write results
             f.write(f"{forward_path}\t"
+                    f"{matrix1.nrows}\t{matrix1.ncols}\t{matrix1.nvals}\t"
+                    f"{matrix2.nrows}\t{matrix2.ncols}\t{matrix2.nvals}\t"
+                    f"{matrix3.nrows}\t{matrix3.ncols}\t{matrix3.nvals}\t"
+                    f"{forward_amortize}\t{reverse_amortize}\t"
                     f"{forward_step1_time:.6f}\t{forward_step1_edges}\t{forward_step1_mem:.3f}\t"
                     f"{forward_step2_time:.6f}\t{forward_result_edges}\t{forward_step2_mem:.3f}\t"
-                    f"{forward_total_time:.6f}\t"
+                    f"{forward_total_time:.6f}\t{forward_amortized_time:.6f}\t"
                     f"{reverse_path}\t"
                     f"{reverse_step1_time:.6f}\t{reverse_step1_edges}\t{reverse_step1_mem:.3f}\t"
                     f"{reverse_step2_time:.6f}\t{reverse_result_edges}\t{reverse_step2_mem:.3f}\t"
-                    f"{reverse_total_time:.6f}\t"
-                    f"{better}\t{time_ratio:.3f}\n")
+                    f"{reverse_total_time:.6f}\t{reverse_amortized_time:.6f}\t"
+                    f"{better}\t{time_ratio:.3f}\t{amortized_better}\t{amortized_ratio:.3f}\n")
 
             samples_checked += 1
 
