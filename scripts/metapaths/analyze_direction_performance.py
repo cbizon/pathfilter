@@ -24,6 +24,7 @@ import json
 import time
 import os
 import gc
+import random
 import psutil
 from collections import defaultdict
 import graphblas as gb
@@ -189,6 +190,36 @@ def analyze_direction_performance(matrices, max_samples=1000):
     for src_type, pred, tgt_type, matrix, direction in all_matrices:
         by_source_type[src_type].append((src_type, pred, tgt_type, matrix, direction))
 
+    # Pre-enumerate all valid 3-hop combinations
+    print(f"\nEnumerating all valid 3-hop combinations...", flush=True)
+    valid_combinations = []
+
+    for src_type1, pred1, tgt_type1, matrix1, dir1 in all_matrices:
+        if tgt_type1 not in by_source_type:
+            continue
+
+        for src_type2, pred2, tgt_type2, matrix2, dir2 in by_source_type[tgt_type1]:
+            if tgt_type2 not in by_source_type:
+                continue
+
+            for src_type3, pred3, tgt_type3, matrix3, dir3 in by_source_type[tgt_type2]:
+                # Check dimension compatibility
+                if matrix1.ncols != matrix2.nrows or matrix2.ncols != matrix3.nrows:
+                    continue
+
+                valid_combinations.append((
+                    (src_type1, pred1, tgt_type1, matrix1, dir1),
+                    (src_type2, pred2, tgt_type2, matrix2, dir2),
+                    (src_type3, pred3, tgt_type3, matrix3, dir3)
+                ))
+
+    print(f"Found {len(valid_combinations):,} valid 3-hop combinations", flush=True)
+
+    # Randomly sample from valid combinations
+    num_samples = min(max_samples, len(valid_combinations))
+    print(f"Randomly sampling {num_samples:,} combinations...", flush=True)
+    sampled_combinations = random.sample(valid_combinations, num_samples)
+
     # Sample valid 3-hop paths and compare
     samples_checked = 0
     forward_faster = 0
@@ -218,149 +249,131 @@ def analyze_direction_performance(matrices, max_samples=1000):
                 "reverse_total_time\t"
                 "better_direction\ttime_ratio\n")
 
-        for idx1, (src_type1, pred1, tgt_type1, matrix1, dir1) in enumerate(all_matrices):
-            if samples_checked >= max_samples:
-                break
+        for (src_type1, pred1, tgt_type1, matrix1, dir1), \
+            (src_type2, pred2, tgt_type2, matrix2, dir2), \
+            (src_type3, pred3, tgt_type3, matrix3, dir3) in sampled_combinations:
 
-            if tgt_type1 not in by_source_type:
+            # ===================================================================
+            # FORWARD DIRECTION: (M1 @ M2) @ M3
+            # ===================================================================
+
+            mem_before_forward = get_memory_mb()
+
+            # Step 1: M1 @ M2
+            start_time = time.time()
+            forward_intermediate = matrix1.mxm(matrix2, gb.semiring.any_pair).new()
+            forward_step1_time = time.time() - start_time
+            forward_step1_edges = forward_intermediate.nvals
+            forward_step1_mem = get_matrix_memory_mb(forward_intermediate)
+            mem_after_step1 = get_memory_mb()
+
+            # Skip if intermediate is empty
+            if forward_step1_edges == 0:
                 continue
 
-            for idx2, (src_type2, pred2, tgt_type2, matrix2, dir2) in enumerate(by_source_type[tgt_type1]):
-                if samples_checked >= max_samples:
-                    break
+            # Step 2: intermediate @ M3
+            start_time = time.time()
+            forward_result = forward_intermediate.mxm(matrix3, gb.semiring.any_pair).new()
+            forward_step2_time = time.time() - start_time
+            forward_result_edges = forward_result.nvals
+            forward_step2_mem = get_matrix_memory_mb(forward_result)
+            mem_after_forward = get_memory_mb()
 
-                if tgt_type2 not in by_source_type:
-                    continue
+            forward_total_time = forward_step1_time + forward_step2_time
+            forward_peak_mem = mem_after_forward - mem_before_forward
 
-                for src_type3, pred3, tgt_type3, matrix3, dir3 in by_source_type[tgt_type2]:
-                    if samples_checked >= max_samples:
-                        break
+            # ===================================================================
+            # REVERSE DIRECTION: (M3^T @ M2^T) @ M1^T
+            # ===================================================================
 
-                    # Check dimension compatibility
-                    if matrix1.ncols != matrix2.nrows or matrix2.ncols != matrix3.nrows:
-                        continue
+            mem_before_reverse = get_memory_mb()
 
-                    # ===================================================================
-                    # FORWARD DIRECTION: (M1 @ M2) @ M3
-                    # ===================================================================
+            # Step 1: M3^T @ M2^T
+            start_time = time.time()
+            reverse_intermediate = matrix3.T.mxm(matrix2.T, gb.semiring.any_pair).new()
+            reverse_step1_time = time.time() - start_time
+            reverse_step1_edges = reverse_intermediate.nvals
+            reverse_step1_mem = get_matrix_memory_mb(reverse_intermediate)
+            mem_after_step1_rev = get_memory_mb()
 
-                    mem_before_forward = get_memory_mb()
+            # Skip if intermediate is empty
+            if reverse_step1_edges == 0:
+                continue
 
-                    # Step 1: M1 @ M2
-                    start_time = time.time()
-                    forward_intermediate = matrix1.mxm(matrix2, gb.semiring.any_pair).new()
-                    forward_step1_time = time.time() - start_time
-                    forward_step1_edges = forward_intermediate.nvals
-                    forward_step1_mem = get_matrix_memory_mb(forward_intermediate)
-                    mem_after_step1 = get_memory_mb()
+            # Step 2: intermediate @ M1^T
+            start_time = time.time()
+            reverse_result = reverse_intermediate.mxm(matrix1.T, gb.semiring.any_pair).new()
+            reverse_step2_time = time.time() - start_time
+            reverse_result_edges = reverse_result.nvals
+            reverse_step2_mem = get_matrix_memory_mb(reverse_result)
+            mem_after_reverse = get_memory_mb()
 
-                    # Skip if intermediate is empty
-                    if forward_step1_edges == 0:
-                        continue
+            reverse_total_time = reverse_step1_time + reverse_step2_time
+            reverse_peak_mem = mem_after_reverse - mem_before_reverse
 
-                    # Step 2: intermediate @ M3
-                    start_time = time.time()
-                    forward_result = forward_intermediate.mxm(matrix3, gb.semiring.any_pair).new()
-                    forward_step2_time = time.time() - start_time
-                    forward_result_edges = forward_result.nvals
-                    forward_step2_mem = get_matrix_memory_mb(forward_result)
-                    mem_after_forward = get_memory_mb()
+            # ===================================================================
+            # COMPARISON
+            # ===================================================================
 
-                    forward_total_time = forward_step1_time + forward_step2_time
-                    forward_peak_mem = mem_after_forward - mem_before_forward
+            # Track timing distributions
+            forward_time_list.append(forward_total_time)
+            reverse_time_list.append(reverse_total_time)
+            forward_step1_time_list.append(forward_step1_time)
+            forward_step2_time_list.append(forward_step2_time)
+            reverse_step1_time_list.append(reverse_step1_time)
+            reverse_step2_time_list.append(reverse_step2_time)
 
-                    # ===================================================================
-                    # REVERSE DIRECTION: (M3^T @ M2^T) @ M1^T
-                    # ===================================================================
+            # Track memory distributions
+            forward_mem_list.append(forward_peak_mem)
+            reverse_mem_list.append(reverse_peak_mem)
 
-                    mem_before_reverse = get_memory_mb()
+            # Calculate time ratio (forward / reverse)
+            if reverse_total_time > 0:
+                time_ratio = forward_total_time / reverse_total_time
+            else:
+                time_ratio = float('inf') if forward_total_time > 0 else 1.0
 
-                    # Step 1: M3^T @ M2^T
-                    start_time = time.time()
-                    reverse_intermediate = matrix3.T.mxm(matrix2.T, gb.semiring.any_pair).new()
-                    reverse_step1_time = time.time() - start_time
-                    reverse_step1_edges = reverse_intermediate.nvals
-                    reverse_step1_mem = get_matrix_memory_mb(reverse_intermediate)
-                    mem_after_step1_rev = get_memory_mb()
+            # Determine which is better (faster)
+            if forward_total_time < reverse_total_time:
+                better = "forward"
+                forward_faster += 1
+            elif reverse_total_time < forward_total_time:
+                better = "reverse"
+                reverse_faster += 1
+            else:
+                better = "equal"
+                equal += 1
 
-                    # Skip if intermediate is empty
-                    if reverse_step1_edges == 0:
-                        continue
+            # Format metapaths
+            forward_path = f"{src_type1}|{pred1}|{dir1}|{tgt_type1}|{pred2}|{dir2}|{tgt_type2}|{pred3}|{dir3}|{tgt_type3}"
+            reverse_path = f"{tgt_type3}|{pred3}|{'F' if dir3=='R' else 'R'}|{tgt_type2}|{pred2}|{'F' if dir2=='R' else 'R'}|{tgt_type1}|{pred1}|{'F' if dir1=='R' else 'R'}|{src_type1}"
 
-                    # Step 2: intermediate @ M1^T
-                    start_time = time.time()
-                    reverse_result = reverse_intermediate.mxm(matrix1.T, gb.semiring.any_pair).new()
-                    reverse_step2_time = time.time() - start_time
-                    reverse_result_edges = reverse_result.nvals
-                    reverse_step2_mem = get_matrix_memory_mb(reverse_result)
-                    mem_after_reverse = get_memory_mb()
+            # Write results
+            f.write(f"{forward_path}\t"
+                    f"{forward_step1_time:.6f}\t{forward_step1_edges}\t{forward_step1_mem:.3f}\t"
+                    f"{forward_step2_time:.6f}\t{forward_result_edges}\t{forward_step2_mem:.3f}\t"
+                    f"{forward_total_time:.6f}\t"
+                    f"{reverse_path}\t"
+                    f"{reverse_step1_time:.6f}\t{reverse_step1_edges}\t{reverse_step1_mem:.3f}\t"
+                    f"{reverse_step2_time:.6f}\t{reverse_result_edges}\t{reverse_step2_mem:.3f}\t"
+                    f"{reverse_total_time:.6f}\t"
+                    f"{better}\t{time_ratio:.3f}\n")
 
-                    reverse_total_time = reverse_step1_time + reverse_step2_time
-                    reverse_peak_mem = mem_after_reverse - mem_before_reverse
+            samples_checked += 1
 
-                    # ===================================================================
-                    # COMPARISON
-                    # ===================================================================
+            # Force garbage collection to free C memory from GraphBLAS matrices
+            if samples_checked % 5 == 0:
+                gc.collect()
 
-                    # Track timing distributions
-                    forward_time_list.append(forward_total_time)
-                    reverse_time_list.append(reverse_total_time)
-                    forward_step1_time_list.append(forward_step1_time)
-                    forward_step2_time_list.append(forward_step2_time)
-                    reverse_step1_time_list.append(reverse_step1_time)
-                    reverse_step2_time_list.append(reverse_step2_time)
-
-                    # Track memory distributions
-                    forward_mem_list.append(forward_peak_mem)
-                    reverse_mem_list.append(reverse_peak_mem)
-
-                    # Calculate time ratio (forward / reverse)
-                    if reverse_total_time > 0:
-                        time_ratio = forward_total_time / reverse_total_time
-                    else:
-                        time_ratio = float('inf') if forward_total_time > 0 else 1.0
-
-                    # Determine which is better (faster)
-                    if forward_total_time < reverse_total_time:
-                        better = "forward"
-                        forward_faster += 1
-                    elif reverse_total_time < forward_total_time:
-                        better = "reverse"
-                        reverse_faster += 1
-                    else:
-                        better = "equal"
-                        equal += 1
-
-                    # Format metapaths
-                    forward_path = f"{src_type1}|{pred1}|{dir1}|{tgt_type1}|{pred2}|{dir2}|{tgt_type2}|{pred3}|{dir3}|{tgt_type3}"
-                    reverse_path = f"{tgt_type3}|{pred3}|{'F' if dir3=='R' else 'R'}|{tgt_type2}|{pred2}|{'F' if dir2=='R' else 'R'}|{tgt_type1}|{pred1}|{'F' if dir1=='R' else 'R'}|{src_type1}"
-
-                    # Write results
-                    f.write(f"{forward_path}\t"
-                            f"{forward_step1_time:.6f}\t{forward_step1_edges}\t{forward_step1_mem:.3f}\t"
-                            f"{forward_step2_time:.6f}\t{forward_result_edges}\t{forward_step2_mem:.3f}\t"
-                            f"{forward_total_time:.6f}\t"
-                            f"{reverse_path}\t"
-                            f"{reverse_step1_time:.6f}\t{reverse_step1_edges}\t{reverse_step1_mem:.3f}\t"
-                            f"{reverse_step2_time:.6f}\t{reverse_result_edges}\t{reverse_step2_mem:.3f}\t"
-                            f"{reverse_total_time:.6f}\t"
-                            f"{better}\t{time_ratio:.3f}\n")
-
-                    samples_checked += 1
-
-                    # Force garbage collection to free C memory from GraphBLAS matrices
-                    if samples_checked % 5 == 0:
-                        gc.collect()
-
-                    if samples_checked % 10 == 0:
-                        print(f"Checked {samples_checked:,} paths | "
-                              f"Forward faster: {forward_faster} | "
-                              f"Reverse faster: {reverse_faster} | "
-                              f"Equal: {equal} | "
-                              f"Avg speedup: {sum(reverse_time_list)/sum(forward_time_list) if forward_time_list else 1:.2f}x | "
-                              f"Mem: {get_memory_mb():.0f}MB",
-                              flush=True)
-                        f.flush()  # Flush every 10 samples instead of 100
+            if samples_checked % 10 == 0:
+                print(f"Checked {samples_checked:,} paths | "
+                      f"Forward faster: {forward_faster} | "
+                      f"Reverse faster: {reverse_faster} | "
+                      f"Equal: {equal} | "
+                      f"Avg speedup: {sum(reverse_time_list)/sum(forward_time_list) if forward_time_list else 1:.2f}x | "
+                      f"Mem: {get_memory_mb():.0f}MB",
+                      flush=True)
+                f.flush()  # Flush every 10 samples instead of 100
 
     # Calculate statistics
     import statistics
