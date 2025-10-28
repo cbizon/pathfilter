@@ -23,6 +23,7 @@ import argparse
 import json
 import time
 import os
+import gc
 import psutil
 from collections import defaultdict
 import graphblas as gb
@@ -347,16 +348,19 @@ def analyze_direction_performance(matrices, max_samples=1000):
 
                     samples_checked += 1
 
+                    # Force garbage collection to free C memory from GraphBLAS matrices
+                    if samples_checked % 5 == 0:
+                        gc.collect()
+
                     if samples_checked % 10 == 0:
                         print(f"Checked {samples_checked:,} paths | "
                               f"Forward faster: {forward_faster} | "
                               f"Reverse faster: {reverse_faster} | "
                               f"Equal: {equal} | "
-                              f"Avg speedup: {sum(reverse_time_list)/sum(forward_time_list) if forward_time_list else 1:.2f}x",
+                              f"Avg speedup: {sum(reverse_time_list)/sum(forward_time_list) if forward_time_list else 1:.2f}x | "
+                              f"Mem: {get_memory_mb():.0f}MB",
                               flush=True)
-
-                    if samples_checked % 100 == 0:
-                        f.flush()
+                        f.flush()  # Flush every 10 samples instead of 100
 
     # Calculate statistics
     import statistics
